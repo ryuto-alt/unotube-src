@@ -45,10 +45,10 @@ index 8c6dd97..fb74770 100644
              if (!experimentalNoticeShouldBeShown()) {
                  return;
 diff --git a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
-index 4b05f15..cf602fb 100644
+index 4b05f15..761a066 100644
 --- a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
 +++ b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
-@@ -126,73 +126,34 @@ public class MorpheAboutPreference extends Preference {
+@@ -126,60 +126,34 @@ public class MorpheAboutPreference extends Preference {
  
          html.append("<div class=\"dialog-header\">");
  
@@ -123,25 +123,20 @@ index 4b05f15..cf602fb 100644
 -                .append(AboutDialogStyle.sectionTitle(getString("morphe_settings_about_links_header")))
 -                .append("<div class=\"settings-group\">");
 -
--        for (WebLink link : aboutLinks) {
--            html.append("<a href=\"").append(link.url).append("\" class=\"settings-item\">")
--                    .append("<span class=\"item-icon\">")
--                    .append(AboutDialogStyle.linkIcon(link.url))
--                    .append("</span>")
--                    .append("<div class=\"item-text\"><div class=\"item-title\">")
--                    .append(link.name)
--                    .append("</div></div>")
--                    .append(AboutDialogStyle.chevron())
--                    .append("</a>");
--        }
++        // UnoTube: 公式サイト・SNS・クレジットは出さず、ライセンス(GPLv3 と Morphe の NOTICE。配布に必須)だけ
++        html.append("<div class=\"section\"><div class=\"settings-group\">");
+         for (WebLink link : aboutLinks) {
+             html.append("<a href=\"").append(link.url).append("\" class=\"settings-item\">")
+                     .append("<span class=\"item-icon\">")
+@@ -191,7 +165,6 @@ public class MorpheAboutPreference extends Preference {
+                     .append(AboutDialogStyle.chevron())
+                     .append("</a>");
+         }
 -
--        html.append("</div></div>").append(AboutDialogStyle.DOCUMENT_END);
-+        // UnoTube: リンク欄(公式サイト・SNS・クレジット)は出さない
-+        html.append(AboutDialogStyle.DOCUMENT_END);
+         html.append("</div></div>").append(AboutDialogStyle.DOCUMENT_END);
  
          return html.toString();
-     }
-@@ -202,7 +163,7 @@ public class MorpheAboutPreference extends Preference {
+@@ -202,7 +175,7 @@ public class MorpheAboutPreference extends Preference {
              Context context = pref.getContext();
  
              // Show a progress spinner if the social links are not fetched yet.
@@ -150,15 +145,15 @@ index 4b05f15..cf602fb 100644
                  // Show a progress spinner, but only if the api fetch takes more than a half a second.
                  final long delayToShowProgressSpinner = 500;
                  ProgressDialog progress = new ProgressDialog(getContext());
-@@ -227,9 +188,9 @@ public class MorpheAboutPreference extends Preference {
+@@ -227,9 +200,9 @@ public class MorpheAboutPreference extends Preference {
                                           @Nullable Handler handler,
                                           Runnable showDialogRunnable,
                                           @Nullable ProgressDialog progress) {
 -        List<WebLink> links = AboutRoutes.fetchAboutLinks();
 -        String currentVersion = AboutRoutes.getLatestPatchesVersion();
 -        String htmlDialog = createDialogHtml(links, currentVersion);
-+        // UnoTube: Morphe のサイト・寄付・SNS・クレジットのリンクは出さない
-+        List<WebLink> links = List.of();
++        // UnoTube: Morphe のサイト・寄付・SNS・クレジットのリンクは出さない。ライセンスだけ
++        List<WebLink> links = List.of(MorpheCreditsDialog.ABOUT_LICENSE);
 +        String htmlDialog = createDialogHtml(links, null);
  
          // Enable to randomly force a delay to debug the spinner logic.

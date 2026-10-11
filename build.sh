@@ -25,7 +25,17 @@ SETTINGS=extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/
 STRINGS=patches/src/main/resources/addresources
 low() { cmd //c "start /low /wait /b $*"; }
 py() { python -X utf8 -I "$@"; }
-mkdir -p logs out
+mkdir -p logs out tools keystore
+
+# 初回: 本家と道具を取ってくる(本家は MORPHE_COMMIT のコミットに合わせる)
+if [[ ! -d morphe-patches ]]; then
+  echo "== Morphe Patches を clone"
+  git clone -q -b dev https://github.com/MorpheApp/morphe-patches
+  [[ -f MORPHE_COMMIT ]] && git -C morphe-patches checkout -q "$(cat MORPHE_COMMIT)"
+fi
+[[ -f $CLI ]] || gh release download v1.18.1 -R MorpheApp/morphe-cli -p '*-all.jar' -D tools
+[[ -f $APKEDITOR ]] || curl -sSL -o "$APKEDITOR" https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar
+[[ -f tools/microg-7.2.1-icon-arm64-v8a.apk ]] || gh release download 7.2.1 -R MorpheApp/MicroG-RE -p 'microg-7.2.1-icon-arm64-v8a.apk' -D tools
 
 if [[ $NO_PULL == 0 ]]; then
   ver=$(adb shell dumpsys package com.google.android.youtube | grep -m1 versionName | cut -d= -f2 | tr -d '\r')
@@ -56,9 +66,12 @@ py tools/make_branding.py > /dev/null
 py tools/make_splash.py > /dev/null
 cp -r branding/res-overrides/. morphe-patches/patches/src/main/resources/
 py tools/apply_preset.py preset.txt "morphe-patches/$SETTINGS"
+# アプリの「UnoTube について」に出る版番号は VERSION(本家の版番号の代わり)
+sed -i "s/^version = .*/version = $(cat VERSION)/" morphe-patches/gradle.properties
 py tools/apply_strings.py strings.txt "morphe-patches/$STRINGS"
 
 echo "== Morphe パッチをビルド"
+rm -f morphe-patches/patches/build/libs/patches-*.mpp
 export GITHUB_ACTOR=${GITHUB_ACTOR:-$(gh api user -q .login)} GITHUB_TOKEN=${GITHUB_TOKEN:-$(gh auth token)}
 export ANDROID_HOME=${ANDROID_HOME:-$LOCALAPPDATA/Android/Sdk}
 (cd morphe-patches && low gradlew.bat :patches:buildAndroid --no-daemon --max-workers=4 --console=plain) > logs/gradle.log 2>&1 \
@@ -66,6 +79,8 @@ export ANDROID_HOME=${ANDROID_HOME:-$LOCALAPPDATA/Android/Sdk}
 mpp=$(ls morphe-patches/patches/build/libs/patches-*.mpp | grep -v sources | tail -1)
 pver=$(basename "$mpp" .mpp | sed 's/^patches-//')
 echo "   $mpp"
+# どの本家で作ったかを残す(配布した APK のソースを辿れるように。GPL の都合)
+git -C morphe-patches rev-parse HEAD > MORPHE_COMMIT
 # 書き換えた本家は戻しておく(overlay を作り直すときは git -C morphe-patches apply ../overlay/unotube.patch から)
 git -C morphe-patches reset -q && git -C morphe-patches checkout -- . && git -C morphe-patches clean -fdq
 
@@ -75,7 +90,7 @@ java -jar "$CLI" options-create -p "$mpp" -o options.json > logs/options.log 2>&
 py tools/make_options.py options.json
 
 echo "== YouTube $ver にパッチ (patches $pver)"
-apk="out/UnoTube-$ver.apk"
+apk="out/UnoTube-$(cat VERSION)-yt$ver.apk"
 low java -jar "${CLI//\//\\}" patch -p "${mpp//\//\\}" --options-file options.json \
   --keystore keystore\\yt-mod.keystore -o "${apk//\//\\}" -t tmp "yt-$ver.apk" > logs/patch.log 2>&1 \
   || { sed 's/\x1b\[[0-9;]*m//g' logs/patch.log | grep -vE 'localizations' | tail -30; exit 1; }
