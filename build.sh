@@ -22,6 +22,7 @@ done
 CLI=tools/morphe-desktop-1.18.1-all.jar
 APKEDITOR=tools/APKEditor-1.4.9.jar
 SETTINGS=extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
+STRINGS=patches/src/main/resources/addresources
 low() { cmd //c "start /low /wait /b $*"; }
 py() { python -X utf8 -I "$@"; }
 mkdir -p logs out
@@ -42,9 +43,10 @@ else
 fi
 test -f "yt-$ver.apk"
 
-echo "== 初期値を書き込み (preset.txt)"
-git -C morphe-patches checkout -- "$SETTINGS"
+echo "== 初期値と文字列を書き込み (preset.txt / strings.txt)"
+git -C morphe-patches checkout -- "$SETTINGS" "$STRINGS"
 py tools/apply_preset.py preset.txt "morphe-patches/$SETTINGS"
+py tools/apply_strings.py strings.txt "morphe-patches/$STRINGS"
 
 echo "== Morphe パッチをビルド"
 export GITHUB_ACTOR=${GITHUB_ACTOR:-$(gh api user -q .login)} GITHUB_TOKEN=${GITHUB_TOKEN:-$(gh auth token)}
@@ -73,7 +75,7 @@ fi
 echo "== できた: $apk"
 
 [[ $NO_INSTALL == 1 ]] && exit 0
-if ! adb shell pm list packages | tr -d '\r' | grep -qx package:app.revanced.android.gms; then
+if ! adb shell pm list packages 2>/dev/null | tr -d '\r' | grep -qx package:app.revanced.android.gms; then
   echo "== MicroG-RE (Google ログイン用) をインストール"
   adb install tools/microg-7.2.1-icon-arm64-v8a.apk
 fi
