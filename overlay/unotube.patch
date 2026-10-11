@@ -164,6 +164,517 @@ index 4b05f15..ff059b2 100644
  
          // Enable to randomly force a delay to debug the spinner logic.
          final boolean debugSpinnerDelayLogic = false;
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/BackgroundPlaybackPatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/BackgroundPlaybackPatch.java
+index bb6012c..5d8538d 100644
+--- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/BackgroundPlaybackPatch.java
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/BackgroundPlaybackPatch.java
+@@ -74,6 +74,9 @@ public class BackgroundPlaybackPatch {
+                 onVideoStateChanged(state);
+                 return kotlin.Unit.INSTANCE;
+             });
++
++            // UnoTube: よそ見で一時停止
++            LookAwayPausePatch.initialize();
+         } catch (Exception ex) {
+             Logger.printException(() -> "initialize failure", ex);
+         } finally {
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java
+new file mode 100644
+index 0000000..48769eb
+--- /dev/null
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java
+@@ -0,0 +1,491 @@
++package app.morphe.extension.youtube.patches;
++
++import static app.morphe.extension.shared.StringRef.str;
++
++import android.Manifest;
++import android.app.Activity;
++import android.app.Application;
++import android.content.Context;
++import android.content.pm.PackageManager;
++import android.graphics.Bitmap;
++import android.graphics.ImageFormat;
++import android.hardware.camera2.CameraCaptureSession;
++import android.hardware.camera2.CameraCharacteristics;
++import android.hardware.camera2.CameraDevice;
++import android.hardware.camera2.CameraManager;
++import android.hardware.camera2.CaptureRequest;
++import android.hardware.camera2.params.StreamConfigurationMap;
++import android.media.AudioManager;
++import android.media.FaceDetector;
++import android.media.Image;
++import android.media.ImageReader;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.Looper;
++import android.os.PowerManager;
++import android.os.SystemClock;
++import android.util.Size;
++import android.view.KeyEvent;
++import android.view.Surface;
++import android.view.WindowManager;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import java.nio.ByteBuffer;
++import java.util.List;
++
++import app.morphe.extension.shared.Logger;
++import app.morphe.extension.shared.Utils;
++import app.morphe.extension.youtube.settings.Settings;
++import app.morphe.extension.youtube.shared.VideoState;
++
++/**
++ * UnoTube: よそ見で一時停止。
++ * <p>
++ * 再生中かつアプリが画面に出ているあいだだけインカメラを低解像度で動かし、Android 標準の顔検出
++ * (android.media.FaceDetector) で顔を探す。顔が設定の秒数だけ見えなければ一時停止し、戻れば再開する。
++ * 映像は解析にだけ使い、保存も送信もしない。
++ * <p>
++ * - 自分で一時停止した動画は再開しない(このクラスが止めたときだけ再開する)
++ * - よそ見中に自分で再生した場合は「聴くだけ」とみなし、顔が戻るまで止めない
++ * - 暗すぎて判定できないコマは無視する
++ * - バックグラウンド再生・画面オフ・PiP ではカメラを止める
++ */
++@SuppressWarnings("unused")
++public final class LookAwayPausePatch {
++
++    public enum Delay {
++        ONE_SECOND(1000),
++        TWO_SECONDS(2000),
++        THREE_SECONDS(3000),
++        FIVE_SECONDS(5000);
++
++        final int millis;
++
++        Delay(int millis) {
++            this.millis = millis;
++        }
++    }
++
++    /** 解析の間隔。1 秒に 3 回くらい。 */
++    private static final long FRAME_INTERVAL_MS = 330;
++    /** よそ見で止めたまま、これだけ経ったら見張りをやめる(電池のため)。 */
++    private static final long GIVE_UP_AFTER_MS = 10 * 60 * 1000;
++    /** 平均の明るさがこれ未満のコマは判定しない。 */
++    private static final int TOO_DARK_LUMA = 24;
++    /** 顔検出に渡す画像の長辺の目安(px)。 */
++    private static final int ANALYZE_LONG_SIDE = 320;
++    private static final int PERMISSION_REQUEST_CODE = 0x0B0E;
++
++    private static final Handler main = new Handler(Looper.getMainLooper());
++
++    private static boolean initialized;
++    @Nullable
++    private static Activity resumedActivity;
++    private static boolean permissionAsked;
++
++    // ── 再生の見張りの状態(メインスレッドだけで触る) ───────────────
++    /** このクラスが一時停止させた。 */
++    private static boolean pausedByUs;
++    private static long pausedAt;
++    /** 再開を送った直後(PLAYING になっても「ユーザーが再開した」と数えない)。 */
++    private static boolean resumingByUs;
++    /** よそ見中にユーザーが再生した: 顔が戻るまで止めない。 */
++    private static boolean listenOnly;
++    private static long lastFaceSeen;
++
++    // ── カメラ(cameraThread で触る) ───────────────────────────
++    private static HandlerThread cameraThread;
++    private static Handler cameraHandler;
++    @Nullable
++    private static CameraDevice camera;
++    @Nullable
++    private static CameraCaptureSession session;
++    @Nullable
++    private static ImageReader reader;
++    private static boolean cameraWanted;
++    private static int sensorOrientation;
++    private static volatile int displayRotationDegrees;
++    private static long lastAnalyzed;
++
++    /**
++     * Injection point. アプリの起動時に一度だけ(BackgroundPlaybackPatch.initialize から)。
++     */
++    public static void initialize() {
++        if (initialized) return;
++        initialized = true;
++        try {
++            Context context = Utils.getContext();
++            if (context.getApplicationContext() instanceof Application app) {
++                app.registerActivityLifecycleCallbacks(new LifecycleCallbacks());
++            }
++            VideoState.getOnChange().addObserver(state -> {
++                main.post(() -> onVideoStateChanged(state));
++                return kotlin.Unit.INSTANCE;
++            });
++        } catch (Exception ex) {
++            Logger.printException(() -> "LookAwayPause initialize failure", ex);
++        }
++    }
++
++    private static final class LifecycleCallbacks implements Application.ActivityLifecycleCallbacks {
++        @Override
++        public void onActivityResumed(@NonNull Activity activity) {
++            resumedActivity = activity;
++            update();
++        }
++
++        @Override
++        public void onActivityPaused(@NonNull Activity activity) {
++            if (resumedActivity == activity) resumedActivity = null;
++            update();
++        }
++
++        @Override
++        public void onActivityDestroyed(@NonNull Activity activity) {
++            if (resumedActivity == activity) resumedActivity = null;
++            update();
++        }
++
++        @Override public void onActivityCreated(@NonNull Activity a, @Nullable Bundle b) {}
++        @Override public void onActivityStarted(@NonNull Activity a) {}
++        @Override public void onActivityStopped(@NonNull Activity a) {}
++        @Override public void onActivitySaveInstanceState(@NonNull Activity a, @NonNull Bundle b) {}
++    }
++
++    private static void onVideoStateChanged(VideoState state) {
++        if (state == VideoState.PLAYING) {
++            if (resumingByUs) {
++                resumingByUs = false;
++            } else if (pausedByUs) {
++                // よそ見で止めたのを、ユーザーが自分で再生した: 聴くだけモード
++                pausedByUs = false;
++                listenOnly = true;
++            }
++            lastFaceSeen = SystemClock.uptimeMillis(); // 再生し始めは猶予を持たせる
++        } else if (state != VideoState.PAUSED) {
++            // 動画が変わった・終わった
++            pausedByUs = false;
++            listenOnly = false;
++        }
++        update();
++    }
++
++    /** カメラを動かすべきかを決め直す。メインスレッドから呼ぶ。 */
++    private static void update() {
++        try {
++            boolean want = shouldWatch();
++            if (want) {
++                if (!hasPermission()) {
++                    requestPermissionOnce();
++                    want = false;
++                }
++            }
++            if (want != cameraWanted) {
++                cameraWanted = want;
++                if (want) {
++                    lastFaceSeen = SystemClock.uptimeMillis();
++                    displayRotationDegrees = currentDisplayRotation();
++                    startCamera();
++                } else {
++                    stopCamera();
++                }
++            }
++        } catch (Exception ex) {
++            Logger.printException(() -> "LookAwayPause update failure", ex);
++        }
++    }
++
++    private static boolean shouldWatch() {
++        if (!Settings.LOOK_AWAY_PAUSE.get()) return false;
++        Activity activity = resumedActivity;
++        if (activity == null || activity.isInPictureInPictureMode()) return false;
++        PowerManager pm = activity.getSystemService(PowerManager.class);
++        if (pm != null && !pm.isInteractive()) return false;
++        return VideoState.getCurrent() == VideoState.PLAYING || pausedByUs;
++    }
++
++    private static boolean hasPermission() {
++        return Utils.getContext().checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
++    }
++
++    private static void requestPermissionOnce() {
++        if (permissionAsked || resumedActivity == null) return;
++        permissionAsked = true;
++        Utils.showToastLong(str("morphe_look_away_pause_permission"));
++        resumedActivity.requestPermissions(new String[]{Manifest.permission.CAMERA}, PERMISSION_REQUEST_CODE);
++    }
++
++    @SuppressWarnings("deprecation")
++    private static int currentDisplayRotation() {
++        WindowManager wm = Utils.getContext().getSystemService(WindowManager.class);
++        int rotation = wm == null ? Surface.ROTATION_0 : wm.getDefaultDisplay().getRotation();
++        return switch (rotation) {
++            case Surface.ROTATION_90 -> 90;
++            case Surface.ROTATION_180 -> 180;
++            case Surface.ROTATION_270 -> 270;
++            default -> 0;
++        };
++    }
++
++    // ── 判定結果 → 一時停止・再開(メインスレッド) ───────────────
++    private static void onAnalyzed(boolean faceFound, boolean tooDark) {
++        if (!cameraWanted) return;
++        final long now = SystemClock.uptimeMillis();
++        displayRotationDegrees = currentDisplayRotation();
++
++        if (faceFound) {
++            lastFaceSeen = now;
++            listenOnly = false;
++            if (pausedByUs) {
++                pausedByUs = false;
++                if (Settings.LOOK_AWAY_RESUME.get() && VideoState.getCurrent() == VideoState.PAUSED) {
++                    resumingByUs = true;
++                    sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY);
++                }
++                update();
++            }
++            return;
++        }
++
++        if (tooDark) {
++            // 判定できないときは「見ている」扱いにして、勝手に止めない
++            lastFaceSeen = now;
++            return;
++        }
++
++        if (pausedByUs) {
++            if (now - pausedAt > GIVE_UP_AFTER_MS) {
++                pausedByUs = false;
++                update();
++            }
++            return;
++        }
++
++        if (!listenOnly && VideoState.getCurrent() == VideoState.PLAYING
++                && now - lastFaceSeen >= Settings.LOOK_AWAY_PAUSE_DELAY.get().millis) {
++            pausedByUs = true;
++            pausedAt = now;
++            sendMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE);
++            Utils.showToastShort(str("morphe_look_away_pause_paused"));
++        }
++    }
++
++    private static void sendMediaKey(int keyCode) {
++        AudioManager am = Utils.getContext().getSystemService(AudioManager.class);
++        if (am == null) return;
++        final long now = SystemClock.uptimeMillis();
++        am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
++        am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
++    }
++
++    // ── カメラ ───────────────────────────────────────────
++    private static void startCamera() {
++        if (cameraThread == null) {
++            cameraThread = new HandlerThread("UnoTube-LookAway");
++            cameraThread.start();
++            cameraHandler = new Handler(cameraThread.getLooper());
++        }
++        cameraHandler.post(LookAwayPausePatch::openCamera);
++    }
++
++    private static void stopCamera() {
++        if (cameraHandler != null) cameraHandler.post(LookAwayPausePatch::closeCamera);
++    }
++
++    @SuppressWarnings("MissingPermission")
++    private static void openCamera() {
++        if (camera != null) return;
++        try {
++            CameraManager manager = Utils.getContext().getSystemService(CameraManager.class);
++            if (manager == null) return;
++
++            String frontId = null;
++            for (String id : manager.getCameraIdList()) {
++                CameraCharacteristics c = manager.getCameraCharacteristics(id);
++                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
++                if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
++                    frontId = id;
++                    Integer orientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
++                    sensorOrientation = orientation == null ? 270 : orientation;
++                    StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
++                    Size size = pickSize(map == null ? null : map.getOutputSizes(ImageFormat.YUV_420_888));
++                    reader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
++                    reader.setOnImageAvailableListener(LookAwayPausePatch::onImage, cameraHandler);
++                    break;
++                }
++            }
++            if (frontId == null || reader == null) {
++                Logger.printDebug(() -> "LookAwayPause: no front camera");
++                return;
++            }
++
++            manager.openCamera(frontId, new CameraDevice.StateCallback() {
++                @Override
++                public void onOpened(@NonNull CameraDevice device) {
++                    if (!cameraWanted || reader == null) {
++                        device.close();
++                        return;
++                    }
++                    camera = device;
++                    createSession(device);
++                }
++
++                @Override
++                public void onDisconnected(@NonNull CameraDevice device) {
++                    // 他のアプリにカメラを取られた: 閉じて、次に状態が変わったときにつなぎ直す
++                    device.close();
++                    if (camera == device) camera = null;
++                    main.post(() -> cameraWanted = false);
++                }
++
++                @Override
++                public void onError(@NonNull CameraDevice device, int error) {
++                    Logger.printDebug(() -> "LookAwayPause camera error: " + error);
++                    device.close();
++                    if (camera == device) camera = null;
++                }
++            }, cameraHandler);
++        } catch (Exception ex) {
++            Logger.printException(() -> "LookAwayPause openCamera failure", ex);
++            closeCamera();
++        }
++    }
++
++    @SuppressWarnings("deprecation")
++    private static void createSession(CameraDevice device) {
++        try {
++            final ImageReader r = reader;
++            if (r == null) return;
++            device.createCaptureSession(List.of(r.getSurface()), new CameraCaptureSession.StateCallback() {
++                @Override
++                public void onConfigured(@NonNull CameraCaptureSession s) {
++                    if (camera != device) {
++                        s.close();
++                        return;
++                    }
++                    session = s;
++                    try {
++                        CaptureRequest.Builder builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
++                        builder.addTarget(r.getSurface());
++                        s.setRepeatingRequest(builder.build(), null, cameraHandler);
++                    } catch (Exception ex) {
++                        Logger.printException(() -> "LookAwayPause repeating request failure", ex);
++                    }
++                }
++
++                @Override
++                public void onConfigureFailed(@NonNull CameraCaptureSession s) {
++                    Logger.printDebug(() -> "LookAwayPause session configure failed");
++                }
++            }, cameraHandler);
++        } catch (Exception ex) {
++            Logger.printException(() -> "LookAwayPause createSession failure", ex);
++        }
++    }
++
++    private static void closeCamera() {
++        try {
++            if (session != null) session.close();
++        } catch (Exception ignored) {
++        }
++        session = null;
++        if (camera != null) camera.close();
++        camera = null;
++        if (reader != null) reader.close();
++        reader = null;
++    }
++
++    /** 長辺が ANALYZE_LONG_SIDE 以上で一番小さいサイズ。 */
++    private static Size pickSize(@Nullable Size[] sizes) {
++        Size best = null;
++        if (sizes != null) {
++            for (Size s : sizes) {
++                int longSide = Math.max(s.getWidth(), s.getHeight());
++                if (longSide < ANALYZE_LONG_SIDE) continue;
++                if (best == null || s.getWidth() * s.getHeight() < best.getWidth() * best.getHeight()) best = s;
++            }
++        }
++        return best != null ? best : new Size(640, 480);
++    }
++
++    // ── 解析(cameraThread) ────────────────────────────────
++    private static void onImage(ImageReader r) {
++        Image image = null;
++        try {
++            image = r.acquireLatestImage();
++            if (image == null) return;
++            final long now = SystemClock.uptimeMillis();
++            if (now - lastAnalyzed < FRAME_INTERVAL_MS) return;
++            lastAnalyzed = now;
++            analyze(image);
++        } catch (Exception ex) {
++            Logger.printException(() -> "LookAwayPause onImage failure", ex);
++        } finally {
++            if (image != null) image.close();
++        }
++    }
++
++    private static void analyze(Image image) {
++        Image.Plane plane = image.getPlanes()[0]; // Y(明るさ)だけ使う
++        ByteBuffer buffer = plane.getBuffer();
++        final int rowStride = plane.getRowStride();
++        final int pixelStride = plane.getPixelStride();
++        final int srcW = image.getWidth(), srcH = image.getHeight();
++        final int step = Math.max(1, Math.max(srcW, srcH) / ANALYZE_LONG_SIDE);
++        final int w = srcW / step, h = srcH / step;
++
++        int[] gray = new int[w * h];
++        long sum = 0;
++        for (int y = 0; y < h; y++) {
++            int row = y * step * rowStride;
++            for (int x = 0; x < w; x++) {
++                int v = buffer.get(row + x * step * pixelStride) & 0xFF;
++                gray[y * w + x] = v;
++                sum += v;
++            }
++        }
++        final boolean tooDark = sum / (w * h) < TOO_DARK_LUMA;
++
++        boolean found = false;
++        if (!tooDark) {
++            // 画像を正立させる回転(前面カメラ)。向きの取り違えに備えて逆さも試す
++            int rotation = (sensorOrientation + displayRotationDegrees) % 360;
++            found = detect(gray, w, h, rotation) || detect(gray, w, h, (rotation + 180) % 360);
++        }
++
++        final boolean result = found;
++        main.post(() -> onAnalyzed(result, tooDark));
++    }
++
++    private static boolean detect(int[] gray, int w, int h, int rotation) {
++        final boolean swap = rotation == 90 || rotation == 270;
++        int outW = swap ? h : w, outH = swap ? w : h;
++        outW &= ~1; // FaceDetector は横幅が偶数の画像しか受け付けない
++
++        int[] pixels = new int[outW * outH];
++        for (int y = 0; y < outH; y++) {
++            for (int x = 0; x < outW; x++) {
++                int sx, sy;
++                switch (rotation) {
++                    case 90 -> { sx = y; sy = h - 1 - x; }
++                    case 180 -> { sx = w - 1 - x; sy = h - 1 - y; }
++                    case 270 -> { sx = w - 1 - y; sy = x; }
++                    default -> { sx = x; sy = y; }
++                }
++                int v = gray[sy * w + sx];
++                pixels[y * outW + x] = 0xFF000000 | (v << 16) | (v << 8) | v;
++            }
++        }
++        Bitmap bitmap = Bitmap.createBitmap(pixels, outW, outH, Bitmap.Config.RGB_565);
++        try {
++            FaceDetector.Face[] faces = new FaceDetector.Face[1];
++            int count = new FaceDetector(outW, outH, 1).findFaces(bitmap, faces);
++            return count > 0 && faces[0] != null && faces[0].confidence() >= FaceDetector.Face.CONFIDENCE_THRESHOLD;
++        } finally {
++            bitmap.recycle();
++        }
++    }
++}
 diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
 index 2e0d9fd..1e6fc1b 100644
 --- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
@@ -485,3 +996,104 @@ index 0000000..ea082d0
 +        paint.setAlpha(255);
 +    }
 +}
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
+index 6f307b9..2ac8ab1 100644
+--- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
+@@ -29,6 +29,7 @@ import app.morphe.extension.shared.sponsorblock.SegmentPlaybackController.Sponso
+ import app.morphe.extension.shared.spoof.ClientType;
+ import app.morphe.extension.youtube.patches.AutoCaptionsPatch.AutoCaptionsStyle;
+ import app.morphe.extension.youtube.patches.BackgroundPlaybackPatch.AutoPauseOnLockMode;
++import app.morphe.extension.youtube.patches.LookAwayPausePatch;
+ import app.morphe.extension.youtube.patches.ChangeFormFactorPatch.FormFactor;
+ import app.morphe.extension.youtube.patches.ChangeFormFactorPatch.TabletLayoutInPlayerAvailability;
+ import app.morphe.extension.youtube.patches.ChangeHeaderPatch.HeaderLogo;
+@@ -624,6 +625,10 @@ public class Settings extends SharedYouTubeSettings {
+ 
+     public static final BooleanSetting REMOVE_BACKGROUND_PLAYBACK_RESTRICTIONS = new BooleanSetting("morphe_remove_background_playback_restrictions", TRUE, true);
+     public static final EnumSetting<AutoPauseOnLockMode> AUTO_PAUSE_ON_LOCK = new EnumSetting<>("morphe_auto_pause_on_screen_lock", AutoPauseOnLockMode.OFF);
++    // UnoTube: よそ見で一時停止
++    public static final BooleanSetting LOOK_AWAY_PAUSE = new BooleanSetting("morphe_look_away_pause", FALSE);
++    public static final EnumSetting<LookAwayPausePatch.Delay> LOOK_AWAY_PAUSE_DELAY = new EnumSetting<>("morphe_look_away_pause_delay", LookAwayPausePatch.Delay.TWO_SECONDS, parent(LOOK_AWAY_PAUSE));
++    public static final BooleanSetting LOOK_AWAY_RESUME = new BooleanSetting("morphe_look_away_resume", TRUE, parent(LOOK_AWAY_PAUSE));
+     public static final BooleanSetting BYPASS_LINK_REDIRECTS = new BooleanSetting("morphe_bypass_link_redirects", TRUE);
+     public static final BooleanSetting EXTERNAL_BROWSER = new BooleanSetting("morphe_external_browser", TRUE, true);
+     public static final BooleanSetting SPOOF_DEVICE_DIMENSIONS = new BooleanSetting("morphe_spoof_device_dimensions", FALSE, true,
+diff --git a/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt b/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
+index d3aaaa4..636bdb2 100644
+--- a/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
++++ b/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
+@@ -69,7 +69,11 @@ val backgroundPlaybackPatch = bytecodePatch(
+ 
+         PreferenceScreen.MISC.addPreferences(
+             SwitchPreference("morphe_remove_background_playback_restrictions"),
+-            ListPreference("morphe_auto_pause_on_screen_lock")
++            ListPreference("morphe_auto_pause_on_screen_lock"),
++            // UnoTube: よそ見で一時停止
++            SwitchPreference("morphe_look_away_pause", summary = true),
++            ListPreference("morphe_look_away_pause_delay"),
++            SwitchPreference("morphe_look_away_resume")
+         )
+ 
+         onCreateHook(EXTENSION_CLASS, "initialize")
+diff --git a/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml b/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
+index dea5642..4cfd0e4 100644
+--- a/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
++++ b/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
+@@ -1351,4 +1351,14 @@ AV1 での動画再生は、カクつくまたはコマ落ちが発生する可
+   <string name="morphe_player_icon_style_entry_bold">太字</string>
+   <string name="morphe_player_icon_style_entry_custom">カスタム</string>
+   <string name="morphe_shorts_icon_style_title">ショート アイコンのスタイル</string>
++  <string name="morphe_look_away_pause_title">よそ見で一時停止</string>
++  <string name="morphe_look_away_pause_summary">顔が画面から外れたら一時停止し、戻ったら再開します。アプリで再生中だけインカメラを使い、映像は端末の中で判定に使うだけで保存も送信もしません</string>
++  <string name="morphe_look_away_pause_delay_title">止めるまでの時間</string>
++  <string name="morphe_look_away_pause_delay_1">1 秒</string>
++  <string name="morphe_look_away_pause_delay_2">2 秒</string>
++  <string name="morphe_look_away_pause_delay_3">3 秒</string>
++  <string name="morphe_look_away_pause_delay_5">5 秒</string>
++  <string name="morphe_look_away_resume_title">顔が戻ったら再開</string>
++  <string name="morphe_look_away_pause_paused">よそ見したので一時停止しました</string>
++  <string name="morphe_look_away_pause_permission">よそ見で一時停止にはカメラの許可が必要です</string>
+ </resources>
+diff --git a/patches/src/main/resources/addresources/values/youtube/arrays.xml b/patches/src/main/resources/addresources/values/youtube/arrays.xml
+index 9e277cf..1ab27db 100644
+--- a/patches/src/main/resources/addresources/values/youtube/arrays.xml
++++ b/patches/src/main/resources/addresources/values/youtube/arrays.xml
+@@ -1070,4 +1070,17 @@
+         <item>SHARP</item>
+         <item>CUSTOM</item>
+     </string-array>
++    <!-- UnoTube: look away pause -->
++    <string-array name="morphe_look_away_pause_delay_entries">
++        <item>@string/morphe_look_away_pause_delay_1</item>
++        <item>@string/morphe_look_away_pause_delay_2</item>
++        <item>@string/morphe_look_away_pause_delay_3</item>
++        <item>@string/morphe_look_away_pause_delay_5</item>
++    </string-array>
++    <string-array name="morphe_look_away_pause_delay_entry_values" translatable="false">
++        <item>ONE_SECOND</item>
++        <item>TWO_SECONDS</item>
++        <item>THREE_SECONDS</item>
++        <item>FIVE_SECONDS</item>
++    </string-array>
+ </resources>
+diff --git a/patches/src/main/resources/addresources/values/youtube/strings.xml b/patches/src/main/resources/addresources/values/youtube/strings.xml
+index d64eb6c..7a22841 100644
+--- a/patches/src/main/resources/addresources/values/youtube/strings.xml
++++ b/patches/src/main/resources/addresources/values/youtube/strings.xml
+@@ -1498,4 +1498,15 @@ Limitation: Reverts to old style \'More videos\' overlay"</string>
+     <string name="morphe_player_icon_style_entry_sharp" translatable="false">Sharp</string>
+     <string name="morphe_player_icon_style_entry_custom">Custom</string>
+     <string name="morphe_shorts_icon_style_title">Shorts icon style</string>
++    <!-- UnoTube: look away pause -->
++    <string name="morphe_look_away_pause_title">Pause when looking away</string>
++    <string name="morphe_look_away_pause_summary">Pauses when your face leaves the screen and resumes when you look back. The front camera is only used on the device while a video plays in the app, frames are never saved or sent</string>
++    <string name="morphe_look_away_pause_delay_title">Pause after</string>
++    <string name="morphe_look_away_pause_delay_1">1 second</string>
++    <string name="morphe_look_away_pause_delay_2">2 seconds</string>
++    <string name="morphe_look_away_pause_delay_3">3 seconds</string>
++    <string name="morphe_look_away_pause_delay_5">5 seconds</string>
++    <string name="morphe_look_away_resume_title">Resume when you look back</string>
++    <string name="morphe_look_away_pause_paused">Paused because you looked away</string>
++    <string name="morphe_look_away_pause_permission">Allow the camera to pause when you look away</string>
+ </resources>
