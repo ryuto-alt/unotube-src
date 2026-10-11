@@ -1,0 +1,95 @@
+# UnoTube の設定の初期値。build.sh が Settings.java の初期値をこの値に書き換える。
+# 書式: キー(morphe_ を除いたもの) = Java の値。アプリ内の設定画面で後から変えられる。
+# 本家でキーが消えたり名前が変わったりすると、build.sh がそこで止まって知らせる。
+
+# ── 邪魔なものを消す: AI・課金の勧誘 ───────────────────────
+hide_ask_gemini_button = TRUE
+hide_get_premium_button = TRUE
+hide_ask_button = TRUE
+hide_quick_actions_ask_button = TRUE
+hide_ask_section = TRUE
+hide_ai_generated_video_summary_section = TRUE
+hide_comments_ai_chat_summary = TRUE
+hide_youtube_premium_menu = TRUE
+hide_stop_ads_button = TRUE
+hide_hype_button = TRUE
+hide_hype_points = TRUE
+hide_hype_menu = TRUE
+
+# ── 邪魔なものを消す: ショート ──────────────────────────
+hide_shorts_home = TRUE
+hide_shorts_subscriptions = TRUE
+hide_shorts_search = TRUE
+hide_shorts_history = TRUE
+hide_shorts_button = TRUE
+
+# ── 邪魔なものを消す: フィード・プレイヤー ───────────────────
+hide_community_posts = TRUE
+hide_ticket_shelf = TRUE
+hide_invite_to_message_card = TRUE
+hide_end_screen_cards = TRUE
+hide_end_screen_suggested_video = TRUE
+hide_info_cards = TRUE
+hide_crowdfunding_box = TRUE
+hide_player_gesture_hints = TRUE
+disable_like_subscribe_glow = TRUE
+# 勝手に開く概要欄・コメント欄、「続けて視聴しますか？」で止まるのを無くす
+disable_player_popup_panels = TRUE
+disable_continue_watching_prompt = TRUE
+
+# ── 邪魔なものを消す: 動画下のボタン・概要欄 ─────────────────
+hide_shop_button = TRUE
+hide_thanks_button = TRUE
+hide_promote_button = TRUE
+hide_remix_button = TRUE
+hide_explore_section = TRUE
+hide_explore_course_section = TRUE
+hide_explore_podcast_section = TRUE
+hide_course_progress_section = TRUE
+hide_quizzes_section = TRUE
+hide_key_concepts_section = TRUE
+hide_comments_gift_animation_and_cards = TRUE
+
+# ── 邪魔なものを消す: 「マイページ」の探索メニュー ──────────────
+hide_shopping_menu = TRUE
+hide_fashion_menu = TRUE
+hide_playables_menu = TRUE
+hide_courses_menu = TRUE
+hide_learning_menu = TRUE
+hide_youtube_kids_menu = TRUE
+hide_youtube_works_menu = TRUE
+
+# ── 再生 ──────────────────────────────────────────
+# 画質の初期値(-2 = YouTube 任せ)
+video_quality_default_wifi = 1080
+video_quality_default_mobile = 720
+# スワイプ: 左半分で明るさ、右半分で音量
+swipe_left_zone = SwipeZoneAction.BRIGHTNESS
+swipe_right_zone = SwipeZoneAction.VOLUME
+
+# ── SponsorBlock: 宣伝・登録のお願い・音楽以外の部分は自動で飛ばす ───
+sb_sponsor = SKIP_AUTOMATICALLY_ONCE.morpheKeyValue
+sb_selfpromo = SKIP_AUTOMATICALLY_ONCE.morpheKeyValue
+sb_interaction = SKIP_AUTOMATICALLY_ONCE.morpheKeyValue
+sb_music_offtopic = SKIP_AUTOMATICALLY_ONCE.morpheKeyValue
+
+# ── 見た目: Catppuccin Mocha ────────────────────────────
+header_logo = HeaderLogo.CUSTOM
+seekbar_custom_color = TRUE
+seekbar_custom_color_primary = "#CBA6F7"
+seekbar_custom_color_accent = "#F5C2E7"
+# スワイプ時のバー(先頭 2 桁は透明度)
+swipe_overlay_progress_brightness_color = "#BFF9E2AF"
+swipe_overlay_progress_volume_color = "#BF89B4FA"
+swipe_overlay_progress_speed_color = "#BFCBA6F7"
+# シークバー上の SponsorBlock 区間の色
+sb_sponsor_color = "#CCA6E3A1"
+sb_selfpromo_color = "#CCF9E2AF"
+sb_interaction_color = "#CCCBA6F7"
+sb_highlight_color = "#CCF38BA8"
+sb_hook_color = "#CC74C7EC"
+sb_intro_color = "#CC94E2D5"
+sb_outro_color = "#CC89B4FA"
+sb_preview_color = "#CC89DCEB"
+sb_filler_color = "#CCB4BEFE"
+sb_music_offtopic_color = "#CCFAB387"

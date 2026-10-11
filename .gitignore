@@ -1,0 +1,22 @@
+# 本家(build.sh が中身を書き換える)
+morphe-patches/
+# 吸い出し・中間生成物・成果物
+src/
+merge_in/
+tmp/
+dl/
+logs/
+out/
+*.apk
+*.log
+options.json
+options-default.json
+patches-full.txt
+settings-dump.txt
+branding/
+# 落としてきた道具(README の手順で取り直せる)
+tools/*.jar
+tools/*.apk
+tools/*.mpp
+# 署名鍵: これを無くすと上書きインストールできなくなる。別の場所にも控えること
+keystore/
