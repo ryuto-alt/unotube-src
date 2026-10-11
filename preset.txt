@@ -75,6 +75,8 @@ sb_music_offtopic = SKIP_AUTOMATICALLY_ONCE.morpheKeyValue
 
 # ── 見た目: Catppuccin Mocha ────────────────────────────
 header_logo = HeaderLogo.CUSTOM
+# 検索バーをロゴの横に大きく出す(超ワイドはロゴが消える)
+searchbar_type = SearchbarType.WIDE
 seekbar_custom_color = TRUE
 seekbar_custom_color_primary = "#CBA6F7"
 seekbar_custom_color_accent = "#F5C2E7"

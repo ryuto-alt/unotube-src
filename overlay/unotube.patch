@@ -1,8 +1,8 @@
 diff --git a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
-index 4a1b9e6..43c14ec 100644
+index 4a1b9e6..54f7761 100644
 --- a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
 +++ b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
-@@ -93,11 +93,8 @@ public class CustomBrandingPatch {
+@@ -93,11 +93,9 @@ public class CustomBrandingPatch {
           */
          @Nullable
          String startupAnimationResourceName() {
@@ -11,16 +11,44 @@ index 4a1b9e6..43c14ec 100644
 -                case PLAY, PLAY_BLACK -> "morphe_startup_animation_play";
 -                default -> null;
 -            };
-+            // UnoTube: 起動アニメーションは Morphe のロゴなので、どのアイコンでも使わない
-+            return null;
++            // UnoTube: 起動アニメーションは tools/make_splash.py の自作のもの(raw/morphe_startup_animation.json を上書き)。
++            // 公式アイコンのときだけ公式のアニメーション。
++            return this == ORIGINAL ? null : "morphe_startup_animation";
          }
      }
  
+diff --git a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/GmsCoreSupportPatch.java b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/GmsCoreSupportPatch.java
+index e2a1136..5327f31 100644
+--- a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/GmsCoreSupportPatch.java
++++ b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/GmsCoreSupportPatch.java
+@@ -863,7 +863,8 @@ public class GmsCoreSupportPatch {
+     private static String getGmsCoreDownload() {
+         //noinspection SwitchStatementWithTooFewBranches
+         return switch (getGmsCoreVendorGroupId()) {
+-            case "app.revanced" -> "https://morphe.software/microg";
++            // UnoTube: 公式サイトではなく MicroG-RE の配布ページを直接開く
++            case "app.revanced" -> "https://github.com/MorpheApp/MicroG-RE/releases/latest";
+             default -> getGmsCoreVendorGroupId() + ".android.gms";
+         };
+     }
+diff --git a/extensions/shared/library/src/main/java/app/morphe/extension/shared/patches/ExperimentalAppNoticePatch.java b/extensions/shared/library/src/main/java/app/morphe/extension/shared/patches/ExperimentalAppNoticePatch.java
+index 8c6dd97..fb74770 100644
+--- a/extensions/shared/library/src/main/java/app/morphe/extension/shared/patches/ExperimentalAppNoticePatch.java
++++ b/extensions/shared/library/src/main/java/app/morphe/extension/shared/patches/ExperimentalAppNoticePatch.java
+@@ -36,6 +36,8 @@ public class ExperimentalAppNoticePatch {
+      * Checks if YouTube watch history endpoint cannot be reached.
+      */
+     public static void showExperimentalNoticeIfNeeded(Activity activity) {
++        // UnoTube: 実機の YouTube に合わせて毎回作るので、実験版の警告(公式サイトへの誘導つき)は出さない
++        if (true) return;
+         try {
+             if (!experimentalNoticeShouldBeShown()) {
+                 return;
 diff --git a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
-index 4b05f15..e3dfb81 100644
+index 4b05f15..cf602fb 100644
 --- a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
 +++ b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
-@@ -126,53 +126,30 @@ public class MorpheAboutPreference extends Preference {
+@@ -126,73 +126,34 @@ public class MorpheAboutPreference extends Preference {
  
          html.append("<div class=\"dialog-header\">");
  
@@ -36,6 +64,9 @@ index 4b05f15..e3dfb81 100644
 -        }
 -
 -        html.append("<div class=\"app-name\">Morphe</div>");
+-
+-        String appPatchesVersion = Utils.getPatchesReleaseVersion();
+-        final boolean isUpToDate = currentVersion == null || appPatchesVersion.equalsIgnoreCase(currentVersion);
 +        // UnoTube: ロゴはネットから取らず、その場で描く。Morphe の最新版との比較もしない。
 +        html.append("""
 +                <div style="width:96px;height:96px;margin:0 auto 14px;border-radius:24px;background:#181825;display:flex;align-items:center;justify-content:center">
@@ -50,9 +81,6 @@ index 4b05f15..e3dfb81 100644
 +
 +        html.append("<div class=\"app-name\">UnoTube</div>");
  
--        String appPatchesVersion = Utils.getPatchesReleaseVersion();
--        final boolean isUpToDate = currentVersion == null || appPatchesVersion.equalsIgnoreCase(currentVersion);
--
 -        // Version status card.
          html.append(String.format("""
                          <div class="info-card">
@@ -90,8 +118,30 @@ index 4b05f15..e3dfb81 100644
 -
          html.append("</div>"); // end .dialog-header
  
-         // Links section.
-@@ -202,7 +179,7 @@ public class MorpheAboutPreference extends Preference {
+-        // Links section.
+-        html.append("<div class=\"section\">")
+-                .append(AboutDialogStyle.sectionTitle(getString("morphe_settings_about_links_header")))
+-                .append("<div class=\"settings-group\">");
+-
+-        for (WebLink link : aboutLinks) {
+-            html.append("<a href=\"").append(link.url).append("\" class=\"settings-item\">")
+-                    .append("<span class=\"item-icon\">")
+-                    .append(AboutDialogStyle.linkIcon(link.url))
+-                    .append("</span>")
+-                    .append("<div class=\"item-text\"><div class=\"item-title\">")
+-                    .append(link.name)
+-                    .append("</div></div>")
+-                    .append(AboutDialogStyle.chevron())
+-                    .append("</a>");
+-        }
+-
+-        html.append("</div></div>").append(AboutDialogStyle.DOCUMENT_END);
++        // UnoTube: リンク欄(公式サイト・SNS・クレジット)は出さない
++        html.append(AboutDialogStyle.DOCUMENT_END);
+ 
+         return html.toString();
+     }
+@@ -202,7 +163,7 @@ public class MorpheAboutPreference extends Preference {
              Context context = pref.getContext();
  
              // Show a progress spinner if the social links are not fetched yet.
@@ -100,16 +150,337 @@ index 4b05f15..e3dfb81 100644
                  // Show a progress spinner, but only if the api fetch takes more than a half a second.
                  final long delayToShowProgressSpinner = 500;
                  ProgressDialog progress = new ProgressDialog(getContext());
-@@ -227,9 +204,9 @@ public class MorpheAboutPreference extends Preference {
+@@ -227,9 +188,9 @@ public class MorpheAboutPreference extends Preference {
                                           @Nullable Handler handler,
                                           Runnable showDialogRunnable,
                                           @Nullable ProgressDialog progress) {
 -        List<WebLink> links = AboutRoutes.fetchAboutLinks();
 -        String currentVersion = AboutRoutes.getLatestPatchesVersion();
 -        String htmlDialog = createDialogHtml(links, currentVersion);
-+        // UnoTube: Morphe のサイト・寄付・SNS のリンクは出さない。クレジットとライセンスだけ残す。
-+        List<WebLink> links = List.of(CREDITS_LINK);
++        // UnoTube: Morphe のサイト・寄付・SNS・クレジットのリンクは出さない
++        List<WebLink> links = List.of();
 +        String htmlDialog = createDialogHtml(links, null);
  
          // Enable to randomly force a delay to debug the spinner logic.
          final boolean debugSpinnerDelayLogic = false;
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
+index 2e0d9fd..1e6fc1b 100644
+--- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
+@@ -120,7 +120,7 @@ public class WideSearchBarPatch {
+             TextView wideSearchBox = new TextView(toolbarViewGroup.getContext());
+             wideSearchBox.setPadding(Dim.dp12, 0, Dim.dp12, 0);
+             wideSearchBox.setText(SEARCH_HINT);
+-            wideSearchBox.setTextSize(16);
++            wideSearchBox.setTextSize(17); // UnoTube: 16 → 17
+             wideSearchBox.setTextColor(textColor);
+             wideSearchBox.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+             wideSearchBox.setSingleLine(true);
+@@ -147,7 +147,7 @@ public class WideSearchBarPatch {
+             View logoView = toolbarViewGroup.findViewById(ID_YOUTUBE_LOGO);
+             final boolean extraWide = SEARCHBAR_TYPE == SearchbarType.EXTRA_WIDE;
+             final int sideMargin = Dim.dp10;
+-            final int searchBarHeight = Dim.dp32;
++            final int searchBarHeight = Dim.dp40; // UnoTube: 32dp → 40dp に大きく
+ 
+             ViewGroup.MarginLayoutParams currentViewGroupParams;
+             if (toolbarViewGroup instanceof LinearLayout) {
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/ThemePatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/ThemePatch.java
+index 1e1ea1a..6fe6743 100644
+--- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/ThemePatch.java
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/ThemePatch.java
+@@ -82,6 +82,8 @@ public class ThemePatch extends BaseThemePatch {
+      * Modern Lottie style animation.
+      */
+     public static void setSplashAnimationLottie(LottieAnimationView view, int resourceId) {
++        // UnoTube: 自作の起動アニメーションを画面の上にかぶせて最後まで再生する
++        UnoTubeSplash.show(view);
+         try {
+             // A custom branding icon replaces the YouTube logo animation with its own.
+             if (SplashAnimationPatch.setBrandedSplashAnimation(view)) {
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/UnoTubeSplash.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/UnoTubeSplash.java
+new file mode 100644
+index 0000000..ea082d0
+--- /dev/null
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/theme/UnoTubeSplash.java
+@@ -0,0 +1,280 @@
++package app.morphe.extension.youtube.patches.theme;
++
++import android.animation.ValueAnimator;
++import android.app.Activity;
++import android.content.Context;
++import android.content.ContextWrapper;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.LinearGradient;
++import android.graphics.Paint;
++import android.graphics.Path;
++import android.graphics.RectF;
++import android.graphics.Shader;
++import android.view.View;
++import android.view.ViewGroup;
++import android.view.animation.LinearInterpolator;
++
++import java.util.Random;
++
++import app.morphe.extension.shared.Logger;
++import app.morphe.extension.shared.theme.ThemeUtils;
++
++/**
++ * UnoTube の起動アニメーション。
++ * <p>
++ * YouTube は読み込みが終わった瞬間に起動画面(Lottie)を消すので、Lottie では最後まで見せられない。
++ * そこで起動時に画面のいちばん上へこの View をかぶせ、最後まで再生してから自分でフェードして消える。
++ * YouTube 側の処理には触らない。1 プロセスにつき 1 回(コールドスタート)だけ。
++ * <p>
++ * 座標は 432x432 の枠(アイコン前景 108dp の 4 倍)で考え、起動画面の Lottie ビューの位置・大きさに合わせて
++ * 拡大する。最初のコマは起動画面の静止アイコンと同じ見た目なので、途切れずにつながる。
++ */
++@SuppressWarnings("unused")
++public final class UnoTubeSplash extends View {
++
++    private static boolean played;
++
++    /** 60fps 換算のコマ数。 */
++    private static final float END = 56;
++    private static final float FADE_START = 44;
++    private static final long DURATION_MS = (long) (END / 60f * 1000);
++
++    private static final float W = 432;
++    private static final float R = W * 0.235f;
++    private static final float CX = W / 2 + R * 0.08f;
++    private static final float CY = W / 2;
++    private static final float GROUND = R * 0.5f;
++
++    private static final int MAUVE = 0xFFCBA6F7;
++    private static final int PINK = 0xFFF5C2E7;
++    private static final int[] CONFETTI = {
++            0xFFF5E0DC, 0xFFF38BA8, 0xFFFAB387, 0xFFF9E2AF, 0xFFA6E3A1, 0xFF94E2D5, 0xFF89DCEB,
++            0xFF74C7EC, 0xFF89B4FA, 0xFFB4BEFE, 0xFFF5C2E7, 0xFFCBA6F7, 0xFFF38BA8, 0xFFA6E3A1,
++    };
++
++    private final View lottie;
++    private final int background;
++    private final Path triangle = roundedTriangle(R, R * 0.2f);
++    private final Path smallTriangle = roundedTriangle(14, 3);
++    private final Paint trianglePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Particle[] particles = new Particle[14];
++    private final RectF rect = new RectF();
++    private final int[] lottieLocation = new int[2];
++    private final int[] selfLocation = new int[2];
++    private float frame;
++
++    private static final class Particle {
++        float angle, dist, fall, size, spin;
++        int t0, color, kind;
++    }
++
++    /**
++     * Injection point. YouTube が起動画面の Lottie をセットしたとき(Activity の onCreate)に呼ぶ。
++     */
++    public static void show(Object lottieView) {
++        try {
++            if (played || !(lottieView instanceof View view)) return;
++            Activity activity = findActivity(view.getContext());
++            if (activity == null) return;
++            played = true;
++
++            ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
++            UnoTubeSplash splash = new UnoTubeSplash(activity, view);
++            decor.addView(splash, new ViewGroup.LayoutParams(
++                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
++            splash.start();
++        } catch (Exception ex) {
++            Logger.printException(() -> "UnoTubeSplash failure", ex);
++        }
++    }
++
++    private static Activity findActivity(Context context) {
++        while (context instanceof ContextWrapper) {
++            if (context instanceof Activity activity) return activity;
++            context = ((ContextWrapper) context).getBaseContext();
++        }
++        return null;
++    }
++
++    private UnoTubeSplash(Context context, View lottie) {
++        super(context);
++        this.lottie = lottie;
++        int bg;
++        try {
++            bg = ThemeUtils.getAppBackgroundColor();
++        } catch (Exception ex) {
++            bg = 0xFF181825;
++        }
++        background = bg | 0xFF000000;
++
++        trianglePaint.setShader(new LinearGradient(-R * 0.5f, -R * 0.9f, R, R * 0.9f,
++                MAUVE, PINK, Shader.TileMode.CLAMP));
++
++        Random rng = new Random(11); // 毎回同じ散り方
++        for (int i = 0; i < particles.length; i++) {
++            Particle p = new Particle();
++            p.angle = (float) (-Math.PI / 2 + i * 2 * Math.PI / particles.length + (rng.nextFloat() - 0.5f) * 0.4f);
++            p.dist = R * (1.25f + rng.nextFloat() * 0.5f);
++            p.fall = 25 + rng.nextFloat() * 20;
++            p.size = 0.8f + rng.nextFloat() * 0.4f;
++            p.spin = (rng.nextBoolean() ? 1 : -1) * (180 + rng.nextInt(360));
++            p.t0 = 9 + rng.nextInt(4);
++            p.color = CONFETTI[i % CONFETTI.length];
++            p.kind = i % 3;
++            particles[i] = p;
++        }
++    }
++
++    private void start() {
++        ValueAnimator animator = ValueAnimator.ofFloat(0, END);
++        animator.setDuration(DURATION_MS);
++        animator.setInterpolator(new LinearInterpolator());
++        animator.addUpdateListener(a -> {
++            frame = (float) a.getAnimatedValue();
++            setAlpha(frame < FADE_START ? 1 : 1 - easeOut((frame - FADE_START) / (END - FADE_START)));
++            invalidate();
++        });
++        animator.addListener(new android.animation.AnimatorListenerAdapter() {
++            @Override
++            public void onAnimationEnd(android.animation.Animator animation) {
++                if (getParent() instanceof ViewGroup parent) parent.removeView(UnoTubeSplash.this);
++            }
++        });
++        animator.start();
++    }
++
++    // ── 補間 ──────────────────────────────────────────────
++    private static float easeOut(float t) { float u = 1 - t; return 1 - u * u * u; }
++    private static float easeIn(float t) { return t * t * t; }
++    private static float easeInOut(float t) { return t < 0.5f ? 4 * t * t * t : 1 - (float) Math.pow(-2 * t + 2, 3) / 2; }
++    private static float clamp01(float t) { return Math.max(0, Math.min(1, t)); }
++
++    /** keys = {frame, value, frame, value, ...}。区間ごとに easeInOut。 */
++    private static float track(float f, float... keys) {
++        if (f <= keys[0]) return keys[1];
++        for (int i = 2; i < keys.length; i += 2) {
++            if (f <= keys[i]) {
++                float t = (f - keys[i - 2]) / (keys[i] - keys[i - 2]);
++                return keys[i - 1] + (keys[i + 1] - keys[i - 1]) * easeInOut(t);
++            }
++        }
++        return keys[keys.length - 1];
++    }
++
++    private static Path roundedTriangle(float r, float corner) {
++        Path path = new Path();
++        float inset = corner / (float) Math.sin(Math.PI / 6);
++        boolean first = true;
++        for (int v = 0; v < 3; v++) {
++            double a = v * 2 * Math.PI / 3;
++            float vx = (float) (r * Math.cos(a)), vy = (float) (r * Math.sin(a));
++            float d = (float) Math.hypot(vx, vy);
++            float ox = vx - vx / d * inset, oy = vy - vy / d * inset;
++            for (int s = 0; s <= 8; s++) {
++                double b = a - Math.PI / 3 + (2 * Math.PI / 3) * s / 8;
++                float x = ox + corner * (float) Math.cos(b), y = oy + corner * (float) Math.sin(b);
++                if (first) { path.moveTo(x, y); first = false; } else path.lineTo(x, y);
++            }
++        }
++        path.close();
++        return path;
++    }
++
++    // ── 描画 ──────────────────────────────────────────────
++    @Override
++    protected void onDraw(Canvas canvas) {
++        canvas.drawColor(background);
++
++        // 起動画面の Lottie ビューと同じ場所・大きさに 432 の枠を合わせる(まだ無ければ画面中央 240dp)
++        float density = getResources().getDisplayMetrics().density;
++        float size, left, top;
++        if (lottie.getWidth() > 0 && lottie.isShown()) {
++            lottie.getLocationOnScreen(lottieLocation);
++            getLocationOnScreen(selfLocation);
++            size = Math.min(lottie.getWidth(), lottie.getHeight());
++            left = lottieLocation[0] - selfLocation[0] + (lottie.getWidth() - size) / 2f;
++            top = lottieLocation[1] - selfLocation[1] + (lottie.getHeight() - size) / 2f;
++        } else {
++            size = 240 * density;
++            left = (getWidth() - size) / 2f;
++            top = (getHeight() - size) / 2f;
++        }
++        canvas.save();
++        canvas.translate(left, top);
++        canvas.scale(size / W, size / W);
++
++        final float f = frame;
++        drawRipple(canvas, f);
++        for (Particle p : particles) drawParticle(canvas, p, f);
++        drawPlay(canvas, f);
++
++        canvas.restore();
++    }
++
++    private void drawPlay(Canvas canvas, float f) {
++        // 跳ねる高さ: ため(0-7) → 頂点(19) → 着地(28)
++        float y;
++        if (f < 7) y = 0;
++        else if (f < 19) y = -120 * easeOut((f - 7) / 12);
++        else if (f < 28) y = -120 * (1 - easeIn((f - 19) / 9));
++        else y = 0;
++
++        float sx = track(f, 0, 1, 7, 1.18f, 11, 0.86f, 19, 1, 26, 0.94f, 30, 1.26f, 35, 0.92f, 40, 1.04f, 44, 1);
++        float sy = track(f, 0, 1, 7, 0.78f, 11, 1.18f, 19, 1, 26, 1.08f, 30, 0.72f, 35, 1.10f, 40, 0.96f, 44, 1);
++        float rot = f < 8 ? 0 : f < 27 ? 360 * easeInOut((f - 8) / 19) : 360;
++        // 最後はアプリへ吸い込まれるように少し大きくなりながら消える
++        float zoom = f < FADE_START ? 1 : 1 + 0.25f * easeIn((f - FADE_START) / (END - FADE_START));
++
++        canvas.save();
++        canvas.translate(CX, CY + GROUND + y);   // 支点は三角形の下寄り(潰れ・伸びの中心)
++        canvas.scale(sx * zoom, sy * zoom);
++        canvas.translate(0, -GROUND);             // 回転は三角形の中心まわり
++        canvas.rotate(rot);
++        canvas.drawPath(triangle, trianglePaint);
++        canvas.restore();
++    }
++
++    private void drawParticle(Canvas canvas, Particle p, float f) {
++        int t1 = p.t0 + 15, t2 = t1 + 13;
++        if (f < p.t0 || f > t2) return;
++        float sx = CX, sy = CY - 40;
++        float mx = sx + (float) Math.cos(p.angle) * p.dist, my = sy + (float) Math.sin(p.angle) * p.dist;
++        float x, y;
++        if (f < t1) {
++            float t = easeOut((f - p.t0) / (t1 - p.t0));
++            x = sx + (mx - sx) * t;
++            y = sy + (my - sy) * t;
++        } else {
++            x = mx;
++            y = my + p.fall * easeIn((f - t1) / (t2 - t1));
++        }
++        float s = p.size * (f < p.t0 + 5 ? easeOut((f - p.t0) / 5) : f < t1 ? 1 : 1 - clamp01((f - t1) / (t2 - t1)));
++        float r = p.spin * clamp01((f - p.t0) / (t2 - p.t0));
++
++        canvas.save();
++        canvas.translate(x, y);
++        canvas.rotate(r);
++        canvas.scale(s, s);
++        paint.setStyle(Paint.Style.FILL);
++        paint.setColor(p.color);
++        switch (p.kind) {
++            case 0 -> canvas.drawCircle(0, 0, 10, paint);
++            case 1 -> { rect.set(-13, -6, 13, 6); canvas.drawRoundRect(rect, 6, 6, paint); }
++            default -> canvas.drawPath(smallTriangle, paint);
++        }
++        canvas.restore();
++    }
++
++    private void drawRipple(Canvas canvas, float f) {
++        if (f < 29 || f > 50) return;
++        float t = easeOut((f - 29) / 21);
++        paint.setStyle(Paint.Style.STROKE);
++        paint.setColor(MAUVE);
++        paint.setAlpha((int) (180 * (1 - t)));
++        paint.setStrokeWidth(9 - 8 * t);
++        canvas.drawCircle(CX, CY, R * (1.15f + 0.8f * t), paint);
++        paint.setAlpha(255);
++    }
++}

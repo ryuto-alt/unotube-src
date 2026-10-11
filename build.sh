@@ -46,11 +46,14 @@ test -f "yt-$ver.apk"
 echo "== 本家に UnoTube を被せる (overlay / ロゴ / preset.txt / strings.txt)"
 # morphe-patches の中の書き換えは毎回ここで捨てて作り直す。直接いじった変更も消えるので、
 # 残したい変更は overlay/*.patch にする(git -C morphe-patches diff > overlay/xxx.patch)
+git -C morphe-patches reset -q
 git -C morphe-patches checkout -- .
+git -C morphe-patches clean -fdq  # overlay で足したファイルも消す(ビルド結果は .gitignore 済みなので残る)
 for p in overlay/*.patch; do
   git -C morphe-patches apply "../$p" || { echo "!! $p が当たらない(本家で該当箇所が変わった)"; exit 1; }
 done
 py tools/make_branding.py > /dev/null
+py tools/make_splash.py > /dev/null
 cp -r branding/res-overrides/. morphe-patches/patches/src/main/resources/
 py tools/apply_preset.py preset.txt "morphe-patches/$SETTINGS"
 py tools/apply_strings.py strings.txt "morphe-patches/$STRINGS"
@@ -63,6 +66,8 @@ export ANDROID_HOME=${ANDROID_HOME:-$LOCALAPPDATA/Android/Sdk}
 mpp=$(ls morphe-patches/patches/build/libs/patches-*.mpp | grep -v sources | tail -1)
 pver=$(basename "$mpp" .mpp | sed 's/^patches-//')
 echo "   $mpp"
+# 書き換えた本家は戻しておく(overlay を作り直すときは git -C morphe-patches apply ../overlay/unotube.patch から)
+git -C morphe-patches reset -q && git -C morphe-patches checkout -- . && git -C morphe-patches clean -fdq
 
 echo "== 見た目の options を作成"
 rm -f options.json

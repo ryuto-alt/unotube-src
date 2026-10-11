@@ -22,7 +22,9 @@ TEXT_DARK = (205, 214, 244)  # #CDD6F4 Mocha Text
 TEXT_LIGHT = (76, 79, 105)   # #4C4F69 Latte Text
 
 ICON_SIZES = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
-HEADER_SIZES = {"hdpi": (194, 72), "xhdpi": (258, 96), "xxhdpi": (387, 144), "xxxhdpi": (512, 192)}
+# Morphe の推奨寸法より大きくすると、そのぶんヘッダーのロゴが大きく表示される(横 1.25 倍・縦 1.1 倍)
+HEADER_SIZES = {dpi: (round(w * 1.25), round(h * 1.1)) for dpi, (w, h) in
+                {"hdpi": (194, 72), "xhdpi": (258, 96), "xxhdpi": (387, 144), "xxxhdpi": (512, 192)}.items()}
 NOTIF_SIZES = {"mdpi": 24, "hdpi": 36, "xhdpi": 48, "xxhdpi": 72, "xxxhdpi": 96}
 
 
@@ -187,17 +189,24 @@ def write_overrides(icon_dir):
 def header(w, h, text_color):
     W, H = w * SS, h * SS
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    font = ImageFont.truetype(r"C:\Windows\Fonts\segoeuib.ttf", int(H * 0.40))
     text = "UnoTube"
+    fontfile = r"C:\Windows\Fonts\segoeuib.ttf"
+    # 画像いっぱいに描く: 横幅に収まる最大の文字サイズ(縦は高さの 62% まで)
+    margin = W * 0.01
+    left = H * 0.08  # 左端で再生マークが切れないように
+    probe = ImageFont.truetype(fontfile, 100)
+    pb = probe.getbbox(text)
+    per_f = 1.6 * 0.475 + 0.25 + (pb[2] - pb[0]) / 100  # 文字サイズ 1 あたりの全体の幅
+    f = min((W - left - margin) / per_f, H * 0.62)
+    font = ImageFont.truetype(fontfile, int(f))
     tb = font.getbbox(text)
     tw, th = tb[2] - tb[0], tb[3] - tb[1]
-    r = H * 0.19
+    r = f * 0.475
     gw = r * 1.6  # 三角形の幅のぶん
-    gap = H * 0.10
+    gap = f * 0.25
     total = gw + gap + tw
-    x0 = (W - total) / 2 if total < W else 0
     # 公式ロゴと同じく左寄せで、縦は中央
-    x0 = H * 0.06
+    x0 = left
     cy = H / 2
     img.alpha_composite(glyph((W, H), x0 + r * 0.55, cy, r, r * 0.22))
     ImageDraw.Draw(img).text((x0 + gw + gap - tb[0], cy - th / 2 - tb[1]), text, font=font, fill=text_color + (255,))
@@ -229,12 +238,12 @@ def main():
     ic.alpha_composite(icon_foreground(px))
     m = Image.new("L", (px, px), 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, px - 1, px - 1], radius=px * 0.3, fill=255)
-    pv = Image.new("RGB", (1100, 460), (40, 40, 40))
+    pv = Image.new("RGB", (1140, 460), (40, 40, 40))
     pv.paste(ic, (14, 14), m)
     for i, (bg, col) in enumerate((((24, 24, 37), TEXT_DARK), ((239, 241, 245), TEXT_LIGHT))):
-        hd = header(512, 192, col)
-        box = Image.new("RGB", (620, 210), bg)
-        box.paste(hd, (54, 9), hd)
+        hd = header(*HEADER_SIZES["xxxhdpi"], col)
+        box = Image.new("RGB", (660, 212), bg)
+        box.paste(hd, (0, 0), hd)
         pv.paste(box, (466, 14 + i * 226))
     pv.save(os.path.join(OUT, "preview.png"))
     print("ok:", OUT)
