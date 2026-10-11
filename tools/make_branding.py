@@ -123,6 +123,67 @@ def write_vectors(icon_dir):
 ''')
 
 
+# アプリ内で選べるアイコン(Morphe のロゴ)を UnoTube の絵で置き換える: 名前 → (背景, 前景の色 2 つ)
+VARIANTS = {
+    "black": ("#000000", "#CBA6F7", "#F5C2E7"),
+    "dark": ("#1E1E2E", "#CBA6F7", "#F5C2E7"),
+    "light": ("#EFF1F5", "#8839EF", "#EA76CB"),  # Latte の Mauve / Pink
+    "play": ("#CBA6F7", "#181825", "#181825"),
+    "play_black": ("#000000", "#FFFFFF", "#FFFFFF"),
+}
+VECTOR_HEAD = '<?xml version="1.0" encoding="utf-8"?>\n<!-- UnoTube: tools/make_branding.py が生成 -->\n'
+
+
+def foreground_vector(c0, c1):
+    path = vector_triangle_path(54 + 25.4 * 0.08, 54, 25.4, 5.1)
+    if c0 == c1:
+        fill = f'android:fillColor="{c0}"'
+        body = ""
+    else:
+        fill = ""
+        body = f'''
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="32" android:startY="32" android:endX="76" android:endY="76">
+                <item android:offset="0" android:color="{c0}"/>
+                <item android:offset="1" android:color="{c1}"/>
+            </gradient>
+        </aapt:attr>
+    '''
+    return VECTOR_HEAD + f'''<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path {fill} android:pathData="{path}">{body}</path>
+</vector>
+'''
+
+
+def write_overrides(icon_dir):
+    """Morphe 本体のリソースを上書きするファイル(build.sh が morphe-patches の resources へ写す)。"""
+    res = os.path.join(OUT, "res-overrides")
+    d = os.path.join(res, "custom-branding", "drawable")
+    os.makedirs(d, exist_ok=True)
+    mono = open(os.path.join(icon_dir, "drawable", "morphe_adaptive_monochrome_custom.xml"), encoding="utf-8").read()
+    notif = open(os.path.join(icon_dir, "drawable", "morphe_notification_icon_custom.xml"), encoding="utf-8").read()
+    for name, (bg, c0, c1) in VARIANTS.items():
+        files = {
+            f"morphe_adaptive_background_{name}.xml": VECTOR_HEAD + f'<color xmlns:android="http://schemas.android.com/apk/res/android"\n    android:color="{bg}" />\n',
+            f"morphe_adaptive_foreground_{name}.xml": foreground_vector(c0, c1),
+            f"morphe_adaptive_monochrome_{name}.xml": mono,
+            f"morphe_notification_icon_{name}.xml": notif,
+        }
+        for fn, text in files.items():
+            with open(os.path.join(d, fn), "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+    # ヘッダーロゴの「Morphe」も UnoTube のロゴ画像(Change header の custom)を指す
+    d = os.path.join(res, "change-header", "drawable")
+    os.makedirs(d, exist_ok=True)
+    for theme in ("dark", "light"):
+        with open(os.path.join(d, f"morphe_header_{theme}.xml"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(VECTOR_HEAD + f'<bitmap xmlns:android="http://schemas.android.com/apk/res/android"\n    android:src="@drawable/morphe_header_custom_{theme}" />\n')
+
+
 def header(w, h, text_color):
     W, H = w * SS, h * SS
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -153,6 +214,7 @@ def main():
         icon_background(px).save(os.path.join(d, "morphe_adaptive_background_custom.png"))
         icon_foreground(px).save(os.path.join(d, "morphe_adaptive_foreground_custom.png"))
     write_vectors(icon_dir)
+    write_overrides(icon_dir)
 
     header_dir = os.path.join(OUT, "header")
     for dpi, (w, h) in HEADER_SIZES.items():

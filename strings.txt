@@ -1,8 +1,14 @@
 # UnoTube で差し替える文字列。build.sh が Morphe の strings.xml に書き込む。
-# 書式: 文字列の名前 = 表示する文字(日本語)
+#
+# 一括置き換え: @rename 元 => 先   (全言語の表示文字が対象。上から順に当てる)
+# 個別:         文字列の名前 = 表示する文字(日本語)
 #  - 日本語訳がある → 日本語訳を差し替え
 #  - 翻訳しない固定の文字(英語の values 側だけ) → それを差し替え
 #  - 日本語訳が抜けている → 日本語訳として足す
+
+# Morphe の名前は全部 UnoTube に
+@rename Morphe Patches => UnoTube
+@rename Morphe => UnoTube
 
 # 設定の項目名・設定画面のタイトル
 morphe_settings_title = UnoTube専用FUCKSETTING

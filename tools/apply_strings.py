@@ -11,16 +11,45 @@ JA = "values-ja-rJP"
 
 
 def load(path):
-    out = {}
+    """(一括置き換えの [(元, 先)], 個別の {名前: 文字})"""
+    renames, out = [], {}
     for n, line in enumerate(open(path, encoding="utf-8"), 1):
         line = line.strip()
         if not line or line.startswith("#"):
+            continue
+        if line.startswith("@rename "):
+            if "=>" not in line:
+                sys.exit(f"{path}:{n}: '=>' がない: {line}")
+            a, b = (s.strip() for s in line[len("@rename "):].split("=>", 1))
+            renames.append((a, b))
             continue
         if "=" not in line:
             sys.exit(f"{path}:{n}: '=' がない: {line}")
         k, v = (s.strip() for s in line.split("=", 1))
         out[k] = v
-    return out
+    return renames, out
+
+
+def rename_all(res, renames):
+    """全言語の strings.xml / arrays.xml の表示文字(タグの間)だけを置き換える。"""
+    files = glob.glob(os.path.join(res, "values*", "*", "strings.xml")) \
+        + glob.glob(os.path.join(res, "values*", "*", "arrays.xml"))
+    count = 0
+
+    def sub(m):
+        nonlocal count
+        text = m.group(1)
+        for a, b in renames:
+            count += text.count(a)
+            text = text.replace(a, b)
+        return ">" + text + "<"
+
+    for f in files:
+        src = open(f, encoding="utf-8").read()
+        new = re.sub(r">([^<]*)<", sub, src)
+        if new != src:
+            open(f, "w", encoding="utf-8", newline="\n").write(new)
+    print(f"strings: 一括置き換え {count} か所 ({', '.join(f'{a}→{b}' for a, b in renames)})")
 
 
 def android_text(s):
@@ -38,7 +67,9 @@ def find(files, name):
 
 
 def main():
-    strings, res = load(sys.argv[1]), sys.argv[2]
+    (renames, strings), res = load(sys.argv[1]), sys.argv[2]
+    if renames:
+        rename_all(res, renames)
     ja_files = sorted(glob.glob(os.path.join(res, JA, "*", "strings.xml")))
     en_files = sorted(glob.glob(os.path.join(res, "values", "*", "strings.xml")))
     for name, text in strings.items():

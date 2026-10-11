@@ -43,8 +43,15 @@ else
 fi
 test -f "yt-$ver.apk"
 
-echo "== 初期値と文字列を書き込み (preset.txt / strings.txt)"
-git -C morphe-patches checkout -- "$SETTINGS" "$STRINGS"
+echo "== 本家に UnoTube を被せる (overlay / ロゴ / preset.txt / strings.txt)"
+# morphe-patches の中の書き換えは毎回ここで捨てて作り直す。直接いじった変更も消えるので、
+# 残したい変更は overlay/*.patch にする(git -C morphe-patches diff > overlay/xxx.patch)
+git -C morphe-patches checkout -- .
+for p in overlay/*.patch; do
+  git -C morphe-patches apply "../$p" || { echo "!! $p が当たらない(本家で該当箇所が変わった)"; exit 1; }
+done
+py tools/make_branding.py > /dev/null
+cp -r branding/res-overrides/. morphe-patches/patches/src/main/resources/
 py tools/apply_preset.py preset.txt "morphe-patches/$SETTINGS"
 py tools/apply_strings.py strings.txt "morphe-patches/$STRINGS"
 
@@ -60,7 +67,6 @@ echo "   $mpp"
 echo "== 見た目の options を作成"
 rm -f options.json
 java -jar "$CLI" options-create -p "$mpp" -o options.json > logs/options.log 2>&1
-py tools/make_branding.py > /dev/null
 py tools/make_options.py options.json
 
 echo "== YouTube $ver にパッチ (patches $pver)"

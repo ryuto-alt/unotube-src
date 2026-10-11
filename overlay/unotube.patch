@@ -1,0 +1,115 @@
+diff --git a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
+index 4a1b9e6..43c14ec 100644
+--- a/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
++++ b/extensions/shared-youtube/library/src/main/java/app/morphe/extension/shared/patches/CustomBrandingPatch.java
+@@ -93,11 +93,8 @@ public class CustomBrandingPatch {
+          */
+         @Nullable
+         String startupAnimationResourceName() {
+-            return switch (this) {
+-                case LIGHT, DARK, BLACK -> "morphe_startup_animation";
+-                case PLAY, PLAY_BLACK -> "morphe_startup_animation_play";
+-                default -> null;
+-            };
++            // UnoTube: 起動アニメーションは Morphe のロゴなので、どのアイコンでも使わない
++            return null;
+         }
+     }
+ 
+diff --git a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
+index 4b05f15..e3dfb81 100644
+--- a/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
++++ b/extensions/shared/library/src/main/java/app/morphe/extension/shared/settings/preference/about/MorpheAboutPreference.java
+@@ -126,53 +126,30 @@ public class MorpheAboutPreference extends Preference {
+ 
+         html.append("<div class=\"dialog-header\">");
+ 
+-        // The logo is fetched over the network, so the container is skipped entirely when offline.
+-        if (Utils.isNetworkConnected()) {
+-            html.append(String.format("""
+-                    <div class="app-logo">
+-                        <div class="app-logo-inner">
+-                            <img src="%s" onerror="this.parentElement.parentElement.style.display='none';" />
+-                        </div>
+-                    </div>
+-                    """, AboutRoutes.aboutLogoUrl));
+-        }
+-
+-        html.append("<div class=\"app-name\">Morphe</div>");
++        // UnoTube: ロゴはネットから取らず、その場で描く。Morphe の最新版との比較もしない。
++        html.append("""
++                <div style="width:96px;height:96px;margin:0 auto 14px;border-radius:24px;background:#181825;display:flex;align-items:center;justify-content:center">
++                    <svg width="76" height="76" viewBox="0 0 108 108">
++                        <defs><linearGradient id="unotube" x1="0" y1="0" x2="1" y2="1">
++                            <stop offset="0" stop-color="#CBA6F7"/><stop offset="1" stop-color="#F5C2E7"/>
++                        </linearGradient></defs>
++                        <path fill="url(#unotube)" d="M77.40,48.80 L79.60,51.00 L80.40,54.00 L79.60,57.00 L77.40,59.20 L50.40,74.78 L47.40,75.59 L44.40,74.78 L42.20,72.59 L41.40,69.59 L41.40,38.41 L42.20,35.41 L44.40,33.22 L47.40,32.41 L50.40,33.22 Z"/>
++                    </svg>
++                </div>
++                """);
++
++        html.append("<div class=\"app-name\">UnoTube</div>");
+ 
+-        String appPatchesVersion = Utils.getPatchesReleaseVersion();
+-        final boolean isUpToDate = currentVersion == null || appPatchesVersion.equalsIgnoreCase(currentVersion);
+-
+-        // Version status card.
+         html.append(String.format("""
+                         <div class="info-card">
+-                            <h3>%s</h3>
+-                            <p>%s</p>
++                            <h3>バージョン</h3>
++                            <p>UnoTube %s<br>YouTube %s</p>
+                         </div>
+                         """,
+-                useNonBreakingHyphens(isUpToDate
+-                        ? getString("morphe_settings_about_links_dev_header_up_to_date")
+-                        : getString("morphe_settings_about_links_dev_header_update_available")),
+-                useNonBreakingHyphens(isUpToDate
+-                        ? getString("morphe_settings_about_links_body_version_current",
+-                                AboutDialogStyle.isolateLtr(appPatchesVersion))
+-                        : getString("morphe_settings_about_links_body_version_outdated",
+-                                AboutDialogStyle.isolateLtr(appPatchesVersion),
+-                                AboutDialogStyle.isolateLtr(currentVersion)))
++                useNonBreakingHyphens(AboutDialogStyle.isolateLtr(Utils.getPatchesReleaseVersion())),
++                AboutDialogStyle.isolateLtr(Utils.getAppVersionName())
+         ));
+ 
+-        // Dev note card.
+-        if (Utils.isPreReleasePatches()) {
+-            html.append(String.format("""
+-                            <div class="info-card">
+-                                <h3>%s</h3>
+-                                <p>%s</p>
+-                            </div>
+-                            """,
+-                    useNonBreakingHyphens(getString("morphe_settings_about_links_dev_header")),
+-                    getString("morphe_settings_about_links_dev_body")
+-            ));
+-        }
+-
+         html.append("</div>"); // end .dialog-header
+ 
+         // Links section.
+@@ -202,7 +179,7 @@ public class MorpheAboutPreference extends Preference {
+             Context context = pref.getContext();
+ 
+             // Show a progress spinner if the social links are not fetched yet.
+-            if (Utils.isNetworkConnected() && !AboutRoutes.hasFetchedLinks() && !AboutRoutes.hasFetchedPatchersVersion()) {
++            if (false) { // UnoTube: ネットから取るものが無いので待ち表示は要らない
+                 // Show a progress spinner, but only if the api fetch takes more than a half a second.
+                 final long delayToShowProgressSpinner = 500;
+                 ProgressDialog progress = new ProgressDialog(getContext());
+@@ -227,9 +204,9 @@ public class MorpheAboutPreference extends Preference {
+                                          @Nullable Handler handler,
+                                          Runnable showDialogRunnable,
+                                          @Nullable ProgressDialog progress) {
+-        List<WebLink> links = AboutRoutes.fetchAboutLinks();
+-        String currentVersion = AboutRoutes.getLatestPatchesVersion();
+-        String htmlDialog = createDialogHtml(links, currentVersion);
++        // UnoTube: Morphe のサイト・寄付・SNS のリンクは出さない。クレジットとライセンスだけ残す。
++        List<WebLink> links = List.of(CREDITS_LINK);
++        String htmlDialog = createDialogHtml(links, null);
+ 
+         // Enable to randomly force a delay to debug the spinner logic.
+         final boolean debugSpinnerDelayLogic = false;
