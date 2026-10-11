@@ -20,3 +20,4 @@ tools/*.apk
 tools/*.mpp
 # 署名鍵: これを無くすと上書きインストールできなくなる。別の場所にも控えること
 keystore/
+__pycache__/
