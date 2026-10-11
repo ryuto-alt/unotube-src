@@ -17,7 +17,12 @@ OVERRIDES = {
     # Catppuccin Mocha(Mantle) / Latte(Base)
     "Theme": {"darkThemeColor": "#181825", "lightThemeColor": "#EFF1F5"},
     "Hide Shorts components": {"hideShortsAppShortcut": True, "hideShortsWidget": True},
+    # 本家 Morphe と同じ app.morphe.android.youtube だと、Morphe 版が入っている端末で
+    # 署名違い(INSTALL_FAILED_UPDATE_INCOMPATIBLE)になり入らない。GmsCore support もこの名前を使う
+    "Clone app": {"packageName": "app.unotube.android.youtube"},
 }
+# 既定で無効なので有効にするパッチ
+ENABLE = ["Clone app"]
 
 
 def main():
@@ -32,6 +37,8 @@ def main():
             if k not in have:
                 sys.exit(f"パッチ '{name}' にオプション '{k}' が無い")
             have[k] = v
+    for name in ENABLE:
+        patches[name]["enabled"] = True
     json.dump(data, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=4)
     print(f"options: {sum(map(len, OVERRIDES.values()))} 件を書き込み")
 
