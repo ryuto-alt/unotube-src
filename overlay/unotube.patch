@@ -178,12 +178,43 @@ index bb6012c..5d8538d 100644
          } catch (Exception ex) {
              Logger.printException(() -> "initialize failure", ex);
          } finally {
+diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/DisableOnTheGoPatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/DisableOnTheGoPatch.java
+new file mode 100644
+index 0000000..9075a9a
+--- /dev/null
++++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/DisableOnTheGoPatch.java
+@@ -0,0 +1,25 @@
++package app.morphe.extension.youtube.patches;
++
++import app.morphe.extension.youtube.settings.Settings;
++
++/**
++ * UnoTube: 外出先モード(On the Go)に勝手に切り替えない。
++ */
++@SuppressWarnings("unused")
++public final class DisableOnTheGoPatch {
++
++    /** 保存値: 0 = 未設定, 1 = 切り替えない, 2 = 自動 */
++    private static final int SWITCH_MODE_NONE = 1;
++
++    /**
++     * Injection point. 外出先モードの切り替え設定を読むたびに呼ばれる。
++     */
++    public static int overrideSwitchMode(int original) {
++        try {
++            return Settings.DISABLE_ON_THE_GO.get() ? SWITCH_MODE_NONE : original;
++        } catch (Throwable ex) {
++            // 起動直後で設定がまだ読めないときは既定(切り替えない)にする
++            return SWITCH_MODE_NONE;
++        }
++    }
++}
 diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java
 new file mode 100644
-index 0000000..48769eb
+index 0000000..a814852
 --- /dev/null
 +++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/LookAwayPausePatch.java
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,770 @@
 +package app.morphe.extension.youtube.patches;
 +
 +import static app.morphe.extension.shared.StringRef.str;
@@ -195,11 +226,16 @@ index 0000000..48769eb
 +import android.content.pm.PackageManager;
 +import android.graphics.Bitmap;
 +import android.graphics.ImageFormat;
++import android.graphics.PointF;
++import android.graphics.Rect;
 +import android.hardware.camera2.CameraCaptureSession;
 +import android.hardware.camera2.CameraCharacteristics;
 +import android.hardware.camera2.CameraDevice;
 +import android.hardware.camera2.CameraManager;
 +import android.hardware.camera2.CaptureRequest;
++import android.hardware.camera2.CaptureResult;
++import android.hardware.camera2.TotalCaptureResult;
++import android.hardware.camera2.params.Face;
 +import android.hardware.camera2.params.StreamConfigurationMap;
 +import android.media.AudioManager;
 +import android.media.FaceDetector;
@@ -211,6 +247,7 @@ index 0000000..48769eb
 +import android.os.Looper;
 +import android.os.PowerManager;
 +import android.os.SystemClock;
++import android.util.SizeF;
 +import android.util.Size;
 +import android.view.KeyEvent;
 +import android.view.Surface;
@@ -224,29 +261,38 @@ index 0000000..48769eb
 +
 +import app.morphe.extension.shared.Logger;
 +import app.morphe.extension.shared.Utils;
++import app.morphe.extension.shared.settings.BaseSettings;
 +import app.morphe.extension.youtube.settings.Settings;
 +import app.morphe.extension.youtube.shared.VideoState;
 +
 +/**
-+ * UnoTube: よそ見で一時停止。
++ * UnoTube: 席を離れたら一時停止。
 + * <p>
-+ * 再生中かつアプリが画面に出ているあいだだけインカメラを低解像度で動かし、Android 標準の顔検出
-+ * (android.media.FaceDetector) で顔を探す。顔が設定の秒数だけ見えなければ一時停止し、戻れば再開する。
++ * 再生中かつアプリが画面に出ているあいだだけインカメラを低解像度で動かし、近くにいる人を探す。
++ * 誰も映らない状態が設定の秒数(既定 5 秒)続いたら一時停止し、戻ってきたら再開する。
 + * 映像は解析にだけ使い、保存も送信もしない。
 + * <p>
++ * 人の見つけ方:
++ * - 顔: カメラ内蔵の顔検出(横顔にも強い。使えない機種もある)と Android 標準の顔検出(正面だけ)を併用する
++ * - 距離: 標準の検出は目と目の間隔(成人の平均 6.3cm)、内蔵の検出は顔の幅から、カメラの焦点距離を使って
++ *   距離を出す。設定の距離(既定 80cm)より遠い顔は数えない(店で後ろの席の人に反応しないように)。
++ *   手持ちで見る距離は平均 29〜37cm(SD 約 7cm)、机に立てかけても 60cm 前後なので、80cm でも余裕がある
++ * - 体: 下を向いて顔が見えなくなっても、最後に顔があった場所の周り(頭・肩)の見た目がそのときと似ていれば
++ *   「まだいる」とみなす。席を立つと背景に変わるので似なくなる
++ * <p>
 + * - 自分で一時停止した動画は再開しない(このクラスが止めたときだけ再開する)
-+ * - よそ見中に自分で再生した場合は「聴くだけ」とみなし、顔が戻るまで止めない
-+ * - 暗すぎて判定できないコマは無視する
++ * - 止めたあとに自分で再生した場合は「聴くだけ」とみなし、人が戻るまで止めない
++ * - 暗すぎて判定できないコマは「いる」とみなす
 + * - バックグラウンド再生・画面オフ・PiP ではカメラを止める
 + */
 +@SuppressWarnings("unused")
 +public final class LookAwayPausePatch {
 +
 +    public enum Delay {
-+        ONE_SECOND(1000),
-+        TWO_SECONDS(2000),
 +        THREE_SECONDS(3000),
-+        FIVE_SECONDS(5000);
++        FIVE_SECONDS(5000),
++        TEN_SECONDS(10_000),
++        THIRTY_SECONDS(30_000);
 +
 +        final int millis;
 +
@@ -255,14 +301,37 @@ index 0000000..48769eb
 +        }
 +    }
 +
++    public enum Distance {
++        CM_60(60),
++        CM_80(80),
++        CM_100(100),
++        CM_150(150);
++
++        final float cm;
++
++        Distance(int cm) {
++            this.cm = cm;
++        }
++    }
++
 +    /** 解析の間隔。1 秒に 3 回くらい。 */
 +    private static final long FRAME_INTERVAL_MS = 330;
-+    /** よそ見で止めたまま、これだけ経ったら見張りをやめる(電池のため)。 */
++    /** 止めたまま、これだけ経ったら見張りをやめる(電池のため)。 */
 +    private static final long GIVE_UP_AFTER_MS = 10 * 60 * 1000;
++    /** 顔が見えないまま体だけで「いる」とみなす上限。 */
++    private static final long BODY_HOLD_MAX_MS = 3 * 60 * 1000;
 +    /** 平均の明るさがこれ未満のコマは判定しない。 */
 +    private static final int TOO_DARK_LUMA = 24;
-+    /** 顔検出に渡す画像の長辺の目安(px)。 */
-+    private static final int ANALYZE_LONG_SIDE = 320;
++    /** 解析する画像の長辺の目安(px)。80cm 先の顔でも目の間隔が 15px くらい取れる大きさ。 */
++    private static final int ANALYZE_LONG_SIDE = 480;
++    /** 成人の目と目の間隔の平均(cm)。 */
++    private static final float EYE_DISTANCE_CM = 6.3f;
++    /** 体の見た目の比べ方: 顔の幅の何倍の正方形を見るか、何マスに縮めるか、どれだけ似ていれば「いる」か。 */
++    private static final float BODY_REGION_SCALE = 3.5f;
++    private static final int BODY_GRID = 20;
++    private static final float BODY_SAME = 0.5f;
++    /** これ以上似ていれば、見本を今のコマに置き換える(少しずつ動いてもついていく)。 */
++    private static final float BODY_REFRESH = 0.8f;
 +    private static final int PERMISSION_REQUEST_CODE = 0x0B0E;
 +
 +    private static final Handler main = new Handler(Looper.getMainLooper());
@@ -278,9 +347,9 @@ index 0000000..48769eb
 +    private static long pausedAt;
 +    /** 再開を送った直後(PLAYING になっても「ユーザーが再開した」と数えない)。 */
 +    private static boolean resumingByUs;
-+    /** よそ見中にユーザーが再生した: 顔が戻るまで止めない。 */
++    /** 止めたあとにユーザーが再生した: 人が戻るまで止めない。 */
 +    private static boolean listenOnly;
-+    private static long lastFaceSeen;
++    private static long lastPresent;
 +
 +    // ── カメラ(cameraThread で触る) ───────────────────────────
 +    private static HandlerThread cameraThread;
@@ -291,10 +360,30 @@ index 0000000..48769eb
 +    private static CameraCaptureSession session;
 +    @Nullable
 +    private static ImageReader reader;
-+    private static boolean cameraWanted;
++    private static volatile boolean cameraWanted;
 +    private static int sensorOrientation;
 +    private static volatile int displayRotationDegrees;
 +    private static long lastAnalyzed;
++
++    /** 1 画素あたりの焦点距離(センサーの画素単位)。0 なら距離は測れない。 */
++    private static float focalPx;
++    @Nullable
++    private static Rect activeArray;
++    private static int streamW, streamH;
++    /** カメラ内蔵の顔検出のモード(OFF なら使わない)。 */
++    private static int halFaceMode = CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF;
++    @Nullable
++    private static Face[] halFaces;
++    @Nullable
++    private static Rect halCrop;
++    /** 内蔵の検出の顔の枠の幅(cm)。標準の検出と同時に見つかったとき目の間隔から学習する。 */
++    private static float halFaceWidthCm = 14f;
++
++    /** 体の見本(最後に近い顔が見えたときの、顔の周りの正方形)。解析画像の座標。 */
++    @Nullable
++    private static float[] bodyRef;
++    private static int bodyX, bodyY, bodySize;
++    private static long lastFaceAt;
 +
 +    /**
 +     * Injection point. アプリの起動時に一度だけ(BackgroundPlaybackPatch.initialize から)。
@@ -346,11 +435,11 @@ index 0000000..48769eb
 +            if (resumingByUs) {
 +                resumingByUs = false;
 +            } else if (pausedByUs) {
-+                // よそ見で止めたのを、ユーザーが自分で再生した: 聴くだけモード
++                // 止めたのを、ユーザーが自分で再生した: 聴くだけモード
 +                pausedByUs = false;
 +                listenOnly = true;
 +            }
-+            lastFaceSeen = SystemClock.uptimeMillis(); // 再生し始めは猶予を持たせる
++            lastPresent = SystemClock.uptimeMillis(); // 再生し始めは猶予を持たせる
 +        } else if (state != VideoState.PAUSED) {
 +            // 動画が変わった・終わった
 +            pausedByUs = false;
@@ -372,7 +461,7 @@ index 0000000..48769eb
 +            if (want != cameraWanted) {
 +                cameraWanted = want;
 +                if (want) {
-+                    lastFaceSeen = SystemClock.uptimeMillis();
++                    lastPresent = SystemClock.uptimeMillis();
 +                    displayRotationDegrees = currentDisplayRotation();
 +                    startCamera();
 +                } else {
@@ -417,13 +506,18 @@ index 0000000..48769eb
 +    }
 +
 +    // ── 判定結果 → 一時停止・再開(メインスレッド) ───────────────
-+    private static void onAnalyzed(boolean faceFound, boolean tooDark) {
++    /**
++     * @param faceNear 近くに顔が見えた
++     * @param present  顔か体で「いる」とわかった(暗くて判定できないときも true)
++     */
++    private static void onAnalyzed(boolean faceNear, boolean present) {
 +        if (!cameraWanted) return;
 +        final long now = SystemClock.uptimeMillis();
 +        displayRotationDegrees = currentDisplayRotation();
 +
-+        if (faceFound) {
-+            lastFaceSeen = now;
++        if (present) lastPresent = now;
++
++        if (faceNear) {
 +            listenOnly = false;
 +            if (pausedByUs) {
 +                pausedByUs = false;
@@ -436,12 +530,6 @@ index 0000000..48769eb
 +            return;
 +        }
 +
-+        if (tooDark) {
-+            // 判定できないときは「見ている」扱いにして、勝手に止めない
-+            lastFaceSeen = now;
-+            return;
-+        }
-+
 +        if (pausedByUs) {
 +            if (now - pausedAt > GIVE_UP_AFTER_MS) {
 +                pausedByUs = false;
@@ -451,7 +539,7 @@ index 0000000..48769eb
 +        }
 +
 +        if (!listenOnly && VideoState.getCurrent() == VideoState.PLAYING
-+                && now - lastFaceSeen >= Settings.LOOK_AWAY_PAUSE_DELAY.get().millis) {
++                && now - lastPresent >= Settings.AWAY_PAUSE_DELAY.get().millis) {
 +            pausedByUs = true;
 +            pausedAt = now;
 +            sendMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE);
@@ -470,7 +558,7 @@ index 0000000..48769eb
 +    // ── カメラ ───────────────────────────────────────────
 +    private static void startCamera() {
 +        if (cameraThread == null) {
-+            cameraThread = new HandlerThread("UnoTube-LookAway");
++            cameraThread = new HandlerThread("UnoTube-AwayPause");
 +            cameraThread.start();
 +            cameraHandler = new Handler(cameraThread.getLooper());
 +        }
@@ -483,7 +571,7 @@ index 0000000..48769eb
 +
 +    @SuppressWarnings("MissingPermission")
 +    private static void openCamera() {
-+        if (camera != null) return;
++        if (camera != null || !cameraWanted) return;
 +        try {
 +            CameraManager manager = Utils.getContext().getSystemService(CameraManager.class);
 +            if (manager == null) return;
@@ -492,21 +580,29 @@ index 0000000..48769eb
 +            for (String id : manager.getCameraIdList()) {
 +                CameraCharacteristics c = manager.getCameraCharacteristics(id);
 +                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
-+                    frontId = id;
-+                    Integer orientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
-+                    sensorOrientation = orientation == null ? 270 : orientation;
-+                    StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-+                    Size size = pickSize(map == null ? null : map.getOutputSizes(ImageFormat.YUV_420_888));
-+                    reader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
-+                    reader.setOnImageAvailableListener(LookAwayPausePatch::onImage, cameraHandler);
-+                    break;
-+                }
++                if (facing == null || facing != CameraCharacteristics.LENS_FACING_FRONT) continue;
++
++                frontId = id;
++                Integer orientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
++                sensorOrientation = orientation == null ? 270 : orientation;
++                activeArray = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
++                focalPx = focalLengthInPixels(c);
++                halFaceMode = pickFaceMode(c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES));
++
++                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
++                Size size = pickSize(map == null ? null : map.getOutputSizes(ImageFormat.YUV_420_888));
++                streamW = size.getWidth();
++                streamH = size.getHeight();
++                reader = ImageReader.newInstance(streamW, streamH, ImageFormat.YUV_420_888, 2);
++                reader.setOnImageAvailableListener(LookAwayPausePatch::onImage, cameraHandler);
++                break;
 +            }
 +            if (frontId == null || reader == null) {
-+                Logger.printDebug(() -> "LookAwayPause: no front camera");
++                Logger.printDebug(() -> "AwayPause: no front camera");
 +                return;
 +            }
++            Logger.printDebug(() -> "AwayPause: stream " + streamW + "x" + streamH
++                    + " focalPx=" + focalPx + " halFaceMode=" + halFaceMode);
 +
 +            manager.openCamera(frontId, new CameraDevice.StateCallback() {
 +                @Override
@@ -529,15 +625,39 @@ index 0000000..48769eb
 +
 +                @Override
 +                public void onError(@NonNull CameraDevice device, int error) {
-+                    Logger.printDebug(() -> "LookAwayPause camera error: " + error);
++                    Logger.printDebug(() -> "AwayPause camera error: " + error);
 +                    device.close();
 +                    if (camera == device) camera = null;
 +                }
 +            }, cameraHandler);
 +        } catch (Exception ex) {
-+            Logger.printException(() -> "LookAwayPause openCamera failure", ex);
++            Logger.printException(() -> "AwayPause openCamera failure", ex);
 +            closeCamera();
 +        }
++    }
++
++    /** センサーの画素単位の焦点距離。測れなければ 0。 */
++    private static float focalLengthInPixels(CameraCharacteristics c) {
++        float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
++        SizeF physical = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
++        Size pixels = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
++        if (focal == null || focal.length == 0 || physical == null || pixels == null
++                || physical.getWidth() <= 0 || pixels.getWidth() <= 0) {
++            return 0;
++        }
++        return focal[0] * pixels.getWidth() / physical.getWidth();
++    }
++
++    private static int pickFaceMode(@Nullable int[] modes) {
++        int best = CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF;
++        if (modes != null) {
++            for (int m : modes) {
++                // SIMPLE で枠が取れれば十分(FULL は重い機種がある)
++                if (m == CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE) return m;
++                if (m == CaptureRequest.STATISTICS_FACE_DETECT_MODE_FULL) best = m;
++            }
++        }
++        return best;
 +    }
 +
 +    @SuppressWarnings("deprecation")
@@ -556,19 +676,29 @@ index 0000000..48769eb
 +                    try {
 +                        CaptureRequest.Builder builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
 +                        builder.addTarget(r.getSurface());
-+                        s.setRepeatingRequest(builder.build(), null, cameraHandler);
++                        if (halFaceMode != CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF) {
++                            builder.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, halFaceMode);
++                        }
++                        s.setRepeatingRequest(builder.build(), new CameraCaptureSession.CaptureCallback() {
++                            @Override
++                            public void onCaptureCompleted(@NonNull CameraCaptureSession s, @NonNull CaptureRequest request,
++                                                           @NonNull TotalCaptureResult result) {
++                                halFaces = result.get(CaptureResult.STATISTICS_FACES);
++                                halCrop = result.get(CaptureResult.SCALER_CROP_REGION);
++                            }
++                        }, cameraHandler);
 +                    } catch (Exception ex) {
-+                        Logger.printException(() -> "LookAwayPause repeating request failure", ex);
++                        Logger.printException(() -> "AwayPause repeating request failure", ex);
 +                    }
 +                }
 +
 +                @Override
 +                public void onConfigureFailed(@NonNull CameraCaptureSession s) {
-+                    Logger.printDebug(() -> "LookAwayPause session configure failed");
++                    Logger.printDebug(() -> "AwayPause session configure failed");
 +                }
 +            }, cameraHandler);
 +        } catch (Exception ex) {
-+            Logger.printException(() -> "LookAwayPause createSession failure", ex);
++            Logger.printException(() -> "AwayPause createSession failure", ex);
 +        }
 +    }
 +
@@ -582,6 +712,8 @@ index 0000000..48769eb
 +        camera = null;
 +        if (reader != null) reader.close();
 +        reader = null;
++        halFaces = null;
++        bodyRef = null;
 +    }
 +
 +    /** 長辺が ANALYZE_LONG_SIDE 以上で一番小さいサイズ。 */
@@ -606,15 +738,20 @@ index 0000000..48769eb
 +            final long now = SystemClock.uptimeMillis();
 +            if (now - lastAnalyzed < FRAME_INTERVAL_MS) return;
 +            lastAnalyzed = now;
-+            analyze(image);
++            analyze(image, now);
 +        } catch (Exception ex) {
-+            Logger.printException(() -> "LookAwayPause onImage failure", ex);
++            Logger.printException(() -> "AwayPause onImage failure", ex);
 +        } finally {
 +            if (image != null) image.close();
 +        }
 +    }
 +
-+    private static void analyze(Image image) {
++    /** 見つかった近い顔。解析画像(縮小・回転前)の座標。 */
++    private static final class NearFace {
++        float x, y, width, distanceCm = Float.MAX_VALUE;
++    }
++
++    private static void analyze(Image image, long now) {
 +        Image.Plane plane = image.getPlanes()[0]; // Y(明るさ)だけ使う
 +        ByteBuffer buffer = plane.getBuffer();
 +        final int rowStride = plane.getRowStride();
@@ -633,20 +770,101 @@ index 0000000..48769eb
 +                sum += v;
 +            }
 +        }
-+        final boolean tooDark = sum / (w * h) < TOO_DARK_LUMA;
-+
-+        boolean found = false;
-+        if (!tooDark) {
-+            // 画像を正立させる回転(前面カメラ)。向きの取り違えに備えて逆さも試す
-+            int rotation = (sensorOrientation + displayRotationDegrees) % 360;
-+            found = detect(gray, w, h, rotation) || detect(gray, w, h, (rotation + 180) % 360);
++        if (sum / (w * h) < TOO_DARK_LUMA) {
++            // 判定できないときは「いる」扱いにして、勝手に止めない
++            main.post(() -> onAnalyzed(false, true));
++            return;
 +        }
 +
-+        final boolean result = found;
-+        main.post(() -> onAnalyzed(result, tooDark));
++        final float maxCm = Settings.AWAY_PAUSE_DISTANCE.get().cm;
++        // 解析画像 1px あたりの焦点距離
++        // 焦点距離が取れない機種は、インカメラの一般的な画角(横 75° くらい)で見積もる
++        final float focalAnalyze = focalPx > 0 ? focalPx * streamScale() / step : Math.max(w, h) * 0.65f;
++
++        NearFace hal = nearestHalFace(step, focalAnalyze);
++        NearFace soft = null;
++        // 内蔵の検出で近い顔が取れていれば標準の検出は省く(重いので)。学習のため、たまには両方走らせる
++        if (hal == null || hal.distanceCm > maxCm || now - lastFaceAt > 2000) {
++            soft = softFace(gray, w, h, focalAnalyze);
++        }
++        if (hal != null && soft != null) calibrateHal(hal, soft);
++
++        NearFace face = null;
++        for (NearFace f : new NearFace[]{hal, soft}) {
++            if (f != null && f.distanceCm <= maxCm && (face == null || f.distanceCm < face.distanceCm)) face = f;
++        }
++
++        boolean present;
++        if (face != null) {
++            lastFaceAt = now;
++            takeBodyReference(gray, w, h, face);
++            present = true;
++        } else {
++            present = bodyStillThere(gray, w, h, now);
++        }
++
++        if (BaseSettings.DEBUG.get()) {
++            final NearFace fh = hal, fs = soft;
++            final boolean p = present;
++            Logger.printDebug(() -> "AwayPause hal=" + describe(fh) + " soft=" + describe(fs) + " present=" + p
++                    + " halFaceWidthCm=" + halFaceWidthCm);
++        }
++        final boolean faceNear = face != null;
++        final boolean result = present;
++        main.post(() -> onAnalyzed(faceNear, result));
 +    }
 +
-+    private static boolean detect(int[] gray, int w, int h, int rotation) {
++    private static String describe(@Nullable NearFace f) {
++        return f == null ? "-" : Math.round(f.distanceCm) + "cm";
++    }
++
++    /** 解析に使う画像(ストリーム)の 1px が、センサーの何 px にあたるかの逆数。 */
++    private static float streamScale() {
++        Rect crop = halCrop != null ? halCrop : activeArray;
++        if (crop == null || crop.width() <= 0 || crop.height() <= 0) return 1;
++        // ストリームは切り出し範囲を縦横比を保って縮めたもの(はみ出す側を切る)
++        return Math.max((float) streamW / crop.width(), (float) streamH / crop.height());
++    }
++
++    /** 内蔵の検出の顔のうち一番近いもの。 */
++    @Nullable
++    private static NearFace nearestHalFace(int step, float focalAnalyze) {
++        Face[] faces = halFaces;
++        Rect crop = halCrop != null ? halCrop : activeArray;
++        if (faces == null || faces.length == 0 || crop == null) return null;
++        final float scale = streamScale();
++        // 縦横比を合わせて切った、ストリームに映る範囲の左上(センサー座標)
++        final float visibleW = streamW / scale, visibleH = streamH / scale;
++        final float left = crop.centerX() - visibleW / 2, top = crop.centerY() - visibleH / 2;
++
++        NearFace best = null;
++        for (Face face : faces) {
++            if (face == null || face.getScore() < 30) continue;
++            Rect b = face.getBounds();
++            NearFace f = new NearFace();
++            f.x = (b.exactCenterX() - left) * scale / step;
++            f.y = (b.exactCenterY() - top) * scale / step;
++            f.width = b.width() * scale / step;
++            if (f.width <= 0) continue;
++            f.distanceCm = focalAnalyze * halFaceWidthCm / f.width;
++            if (best == null || f.width > best.width) best = f;
++        }
++        return best;
++    }
++
++    /** Android 標準の顔検出(正面の顔)。距離は目と目の間隔から。 */
++    @Nullable
++    private static NearFace softFace(int[] gray, int w, int h, float focalAnalyze) {
++        // 画像を正立させる回転(前面カメラ)。向きの取り違えに備えて逆さも試す
++        int rotation = (sensorOrientation + displayRotationDegrees) % 360;
++        NearFace f = detect(gray, w, h, rotation);
++        if (f == null) f = detect(gray, w, h, (rotation + 180) % 360);
++        if (f != null) f.distanceCm = focalAnalyze * EYE_DISTANCE_CM / (f.width / 2.2f);
++        return f;
++    }
++
++    @Nullable
++    private static NearFace detect(int[] gray, int w, int h, int rotation) {
 +        final boolean swap = rotation == 90 || rotation == 270;
 +        int outW = swap ? h : w, outH = swap ? w : h;
 +        outW &= ~1; // FaceDetector は横幅が偶数の画像しか受け付けない
@@ -669,10 +887,102 @@ index 0000000..48769eb
 +        try {
 +            FaceDetector.Face[] faces = new FaceDetector.Face[1];
 +            int count = new FaceDetector(outW, outH, 1).findFaces(bitmap, faces);
-+            return count > 0 && faces[0] != null && faces[0].confidence() >= FaceDetector.Face.CONFIDENCE_THRESHOLD;
++            FaceDetector.Face face = faces[0];
++            if (count <= 0 || face == null || face.confidence() < FaceDetector.Face.CONFIDENCE_THRESHOLD) return null;
++
++            PointF mid = new PointF();
++            face.getMidPoint(mid);
++            // 回転後の座標 → 解析画像の座標
++            NearFace f = new NearFace();
++            int rx = Math.round(mid.x), ry = Math.round(mid.y);
++            switch (rotation) {
++                case 90 -> { f.x = ry; f.y = h - 1 - rx; }
++                case 180 -> { f.x = w - 1 - rx; f.y = h - 1 - ry; }
++                case 270 -> { f.x = w - 1 - ry; f.y = rx; }
++                default -> { f.x = rx; f.y = ry; }
++            }
++            // 顔の幅はおよそ目の間隔の 2.2 倍
++            f.width = face.eyesDistance() * 2.2f;
++            return f;
 +        } finally {
 +            bitmap.recycle();
 +        }
++    }
++
++    /** 両方で同じ顔が見つかったら、内蔵の検出の枠の幅(cm)を目の間隔から学習する。 */
++    private static void calibrateHal(NearFace hal, NearFace soft) {
++        float dx = hal.x - soft.x, dy = hal.y - soft.y;
++        if (dx * dx + dy * dy > (hal.width / 2) * (hal.width / 2)) return;
++        float eyePx = soft.width / 2.2f;
++        if (eyePx <= 0) return;
++        float cm = hal.width / eyePx * EYE_DISTANCE_CM;
++        if (cm < 9 || cm > 25) return;
++        halFaceWidthCm = halFaceWidthCm * 0.8f + cm * 0.2f;
++    }
++
++    // ── 体の見本 ─────────────────────────────────────────
++    private static void takeBodyReference(int[] gray, int w, int h, NearFace face) {
++        int size = Math.round(face.width * BODY_REGION_SCALE);
++        size = Math.max(BODY_GRID, Math.min(size, Math.min(w, h)));
++        bodySize = size;
++        bodyX = clamp(Math.round(face.x - size / 2f), 0, w - size);
++        bodyY = clamp(Math.round(face.y - size / 2f), 0, h - size);
++        bodyRef = sampleBody(gray, w);
++    }
++
++    private static boolean bodyStillThere(int[] gray, int w, int h, long now) {
++        float[] ref = bodyRef;
++        if (ref == null || now - lastFaceAt > BODY_HOLD_MAX_MS) return false;
++        if (bodyX + bodySize > w || bodyY + bodySize > h) return false;
++        float[] current = sampleBody(gray, w);
++        if (current == null) return false;
++        float similarity = 0;
++        for (int i = 0; i < ref.length; i++) similarity += ref[i] * current[i];
++        similarity /= ref.length;
++        if (similarity >= BODY_REFRESH) bodyRef = current;
++        return similarity >= BODY_SAME;
++    }
++
++    /** 見本の正方形を BODY_GRID マスに縮め、平均 0・分散 1 にそろえる(明るさの変化に強くする)。 */
++    @Nullable
++    private static float[] sampleBody(int[] gray, int w) {
++        final int n = BODY_GRID;
++        float[] out = new float[n * n];
++        final float cell = (float) bodySize / n;
++        float mean = 0;
++        for (int gy = 0; gy < n; gy++) {
++            for (int gx = 0; gx < n; gx++) {
++                int x0 = bodyX + Math.round(gx * cell), x1 = Math.max(x0 + 1, bodyX + Math.round((gx + 1) * cell));
++                int y0 = bodyY + Math.round(gy * cell), y1 = Math.max(y0 + 1, bodyY + Math.round((gy + 1) * cell));
++                long s = 0;
++                int count = 0;
++                for (int y = y0; y < y1; y += 2) {
++                    for (int x = x0; x < x1; x += 2) {
++                        s += gray[y * w + x];
++                        count++;
++                    }
++                }
++                float v = count == 0 ? 0 : (float) s / count;
++                out[gy * n + gx] = v;
++                mean += v;
++            }
++        }
++        mean /= out.length;
++        float var = 0;
++        for (int i = 0; i < out.length; i++) {
++            out[i] -= mean;
++            var += out[i] * out[i];
++        }
++        var /= out.length;
++        // のっぺりした場所(白い壁など)は比べても意味がない
++        if (var < 25) return null;
++        float sd = (float) Math.sqrt(var);
++        for (int i = 0; i < out.length; i++) out[i] /= sd;
++        return out;
++    }
++
++    private static int clamp(int v, int lo, int hi) {
++        return Math.max(lo, Math.min(hi, v));
 +    }
 +}
 diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/patches/WideSearchBarPatch.java
@@ -997,7 +1307,7 @@ index 0000000..ea082d0
 +    }
 +}
 diff --git a/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java b/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
-index 6f307b9..2ac8ab1 100644
+index 6f307b9..92e4d93 100644
 --- a/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
 +++ b/extensions/youtube/src/main/java/app/morphe/extension/youtube/settings/Settings.java
 @@ -29,6 +29,7 @@ import app.morphe.extension.shared.sponsorblock.SegmentPlaybackController.Sponso
@@ -1008,92 +1318,196 @@ index 6f307b9..2ac8ab1 100644
  import app.morphe.extension.youtube.patches.ChangeFormFactorPatch.FormFactor;
  import app.morphe.extension.youtube.patches.ChangeFormFactorPatch.TabletLayoutInPlayerAvailability;
  import app.morphe.extension.youtube.patches.ChangeHeaderPatch.HeaderLogo;
-@@ -624,6 +625,10 @@ public class Settings extends SharedYouTubeSettings {
+@@ -624,6 +625,13 @@ public class Settings extends SharedYouTubeSettings {
  
      public static final BooleanSetting REMOVE_BACKGROUND_PLAYBACK_RESTRICTIONS = new BooleanSetting("morphe_remove_background_playback_restrictions", TRUE, true);
      public static final EnumSetting<AutoPauseOnLockMode> AUTO_PAUSE_ON_LOCK = new EnumSetting<>("morphe_auto_pause_on_screen_lock", AutoPauseOnLockMode.OFF);
-+    // UnoTube: よそ見で一時停止
++    // UnoTube: 席を離れたら一時停止
 +    public static final BooleanSetting LOOK_AWAY_PAUSE = new BooleanSetting("morphe_look_away_pause", FALSE);
-+    public static final EnumSetting<LookAwayPausePatch.Delay> LOOK_AWAY_PAUSE_DELAY = new EnumSetting<>("morphe_look_away_pause_delay", LookAwayPausePatch.Delay.TWO_SECONDS, parent(LOOK_AWAY_PAUSE));
++    public static final EnumSetting<LookAwayPausePatch.Delay> AWAY_PAUSE_DELAY = new EnumSetting<>("morphe_away_pause_delay", LookAwayPausePatch.Delay.FIVE_SECONDS, parent(LOOK_AWAY_PAUSE));
++    public static final EnumSetting<LookAwayPausePatch.Distance> AWAY_PAUSE_DISTANCE = new EnumSetting<>("morphe_away_pause_distance", LookAwayPausePatch.Distance.CM_80, parent(LOOK_AWAY_PAUSE));
 +    public static final BooleanSetting LOOK_AWAY_RESUME = new BooleanSetting("morphe_look_away_resume", TRUE, parent(LOOK_AWAY_PAUSE));
++    // UnoTube: 外出先モード(On the Go)に勝手に切り替えない
++    public static final BooleanSetting DISABLE_ON_THE_GO = new BooleanSetting("morphe_disable_on_the_go", TRUE, true);
      public static final BooleanSetting BYPASS_LINK_REDIRECTS = new BooleanSetting("morphe_bypass_link_redirects", TRUE);
      public static final BooleanSetting EXTERNAL_BROWSER = new BooleanSetting("morphe_external_browser", TRUE, true);
      public static final BooleanSetting SPOOF_DEVICE_DIMENSIONS = new BooleanSetting("morphe_spoof_device_dimensions", FALSE, true,
+diff --git a/patches/src/main/kotlin/app/morphe/patches/youtube/layout/player/onthego/DisableOnTheGoPatch.kt b/patches/src/main/kotlin/app/morphe/patches/youtube/layout/player/onthego/DisableOnTheGoPatch.kt
+new file mode 100644
+index 0000000..3abb6a1
+--- /dev/null
++++ b/patches/src/main/kotlin/app/morphe/patches/youtube/layout/player/onthego/DisableOnTheGoPatch.kt
+@@ -0,0 +1,66 @@
++package app.morphe.patches.youtube.layout.player.onthego
++
++import app.morphe.patcher.Fingerprint
++import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
++import app.morphe.patcher.patch.PatchException
++import app.morphe.patcher.patch.bytecodePatch
++import app.morphe.patches.shared.misc.settings.preference.SwitchPreference
++import app.morphe.patches.youtube.misc.extension.sharedExtensionPatch
++import app.morphe.patches.youtube.misc.settings.PreferenceScreen
++import app.morphe.patches.youtube.misc.settings.settingsPatch
++import app.morphe.patches.youtube.shared.Constants.COMPATIBILITY_YOUTUBE
++import com.android.tools.smali.dexlib2.AccessFlags
++
++private const val EXTENSION_CLASS =
++    "Lapp/morphe/extension/youtube/patches/DisableOnTheGoPatch;"
++
++/**
++ * 端末に保存される「外出先モードの切り替え」(UNKNOWN / NONE / AUTO)の enum の初期化。
++ */
++internal object OnTheGoSwitchModeEnumFingerprint : Fingerprint(
++    accessFlags = listOf(AccessFlags.STATIC, AccessFlags.CONSTRUCTOR),
++    strings = listOf(
++        "SETTING_OTG_SWITCH_MODE_NONE",
++        "SETTING_OTG_SWITCH_MODE_AUTO"
++    )
++)
++
++/**
++ * UnoTube: 歩いているときなどに YouTube が勝手に外出先モード(On the Go: 大きい操作パネルで、
++ * ⊗ を押すまで消えない)に切り替えるのをやめる。
++ *
++ * 保存された設定を読む forNumber(int) で「自動」「未設定」を「切り替えない」に読み替える。
++ * 端末側の自動切り替えも、サーバーに送る設定値も、この読み出しを通る。
++ */
++@Suppress("unused")
++val disableOnTheGoPatch = bytecodePatch(
++    name = "Disable On the Go mode",
++    description = "Adds an option to stop the player from switching to On the Go mode automatically.",
++) {
++    dependsOn(
++        sharedExtensionPatch,
++        settingsPatch,
++    )
++
++    compatibleWith(COMPATIBILITY_YOUTUBE)
++
++    execute {
++        PreferenceScreen.PLAYER.addPreferences(
++            SwitchPreference("morphe_disable_on_the_go")
++        )
++
++        val enumType = OnTheGoSwitchModeEnumFingerprint.classDef.type
++        val forNumber = OnTheGoSwitchModeEnumFingerprint.classDef.methods.firstOrNull {
++            AccessFlags.STATIC.isSet(it.accessFlags) && it.returnType == enumType &&
++                    it.parameterTypes.size == 1 && it.parameterTypes[0] == "I"
++        } ?: throw PatchException("Could not find On the Go forNumber method")
++
++        forNumber.addInstructions(
++            0,
++            """
++                invoke-static { p0 }, $EXTENSION_CLASS->overrideSwitchMode(I)I
++                move-result p0
++            """
++        )
++    }
++}
 diff --git a/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt b/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
-index d3aaaa4..636bdb2 100644
+index d3aaaa4..c0f5587 100644
 --- a/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
 +++ b/patches/src/main/kotlin/app/morphe/patches/youtube/misc/backgroundplayback/BackgroundPlaybackPatch.kt
-@@ -69,7 +69,11 @@ val backgroundPlaybackPatch = bytecodePatch(
+@@ -69,7 +69,12 @@ val backgroundPlaybackPatch = bytecodePatch(
  
          PreferenceScreen.MISC.addPreferences(
              SwitchPreference("morphe_remove_background_playback_restrictions"),
 -            ListPreference("morphe_auto_pause_on_screen_lock")
 +            ListPreference("morphe_auto_pause_on_screen_lock"),
-+            // UnoTube: よそ見で一時停止
++            // UnoTube: 席を離れたら一時停止
 +            SwitchPreference("morphe_look_away_pause", summary = true),
-+            ListPreference("morphe_look_away_pause_delay"),
++            ListPreference("morphe_away_pause_delay"),
++            ListPreference("morphe_away_pause_distance"),
 +            SwitchPreference("morphe_look_away_resume")
          )
  
          onCreateHook(EXTENSION_CLASS, "initialize")
 diff --git a/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml b/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
-index dea5642..4cfd0e4 100644
+index dea5642..9a33bf5 100644
 --- a/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
 +++ b/patches/src/main/resources/addresources/values-ja-rJP/youtube/strings.xml
-@@ -1351,4 +1351,14 @@ AV1 での動画再生は、カクつくまたはコマ落ちが発生する可
+@@ -1351,4 +1351,22 @@ AV1 での動画再生は、カクつくまたはコマ落ちが発生する可
    <string name="morphe_player_icon_style_entry_bold">太字</string>
    <string name="morphe_player_icon_style_entry_custom">カスタム</string>
    <string name="morphe_shorts_icon_style_title">ショート アイコンのスタイル</string>
-+  <string name="morphe_look_away_pause_title">よそ見で一時停止</string>
-+  <string name="morphe_look_away_pause_summary">顔が画面から外れたら一時停止し、戻ったら再開します。アプリで再生中だけインカメラを使い、映像は端末の中で判定に使うだけで保存も送信もしません</string>
-+  <string name="morphe_look_away_pause_delay_title">止めるまでの時間</string>
-+  <string name="morphe_look_away_pause_delay_1">1 秒</string>
-+  <string name="morphe_look_away_pause_delay_2">2 秒</string>
-+  <string name="morphe_look_away_pause_delay_3">3 秒</string>
-+  <string name="morphe_look_away_pause_delay_5">5 秒</string>
-+  <string name="morphe_look_away_resume_title">顔が戻ったら再開</string>
-+  <string name="morphe_look_away_pause_paused">よそ見したので一時停止しました</string>
-+  <string name="morphe_look_away_pause_permission">よそ見で一時停止にはカメラの許可が必要です</string>
++  <string name="morphe_look_away_pause_title">席を離れたら一時停止</string>
++  <string name="morphe_look_away_pause_summary">インカメラに人が映らなくなったら一時停止し、戻ってきたら再開します。下を向いていても肩や頭が映っていれば止めません。遠くの人(後ろの席など)は数えません。アプリで再生中だけインカメラを使い、映像は端末の中で判定に使うだけで保存も送信もしません</string>
++  <string name="morphe_away_pause_delay_title">止めるまでの時間</string>
++  <string name="morphe_away_pause_delay_3">3 秒</string>
++  <string name="morphe_away_pause_delay_5">5 秒</string>
++  <string name="morphe_away_pause_delay_10">10 秒</string>
++  <string name="morphe_away_pause_delay_30">30 秒</string>
++  <string name="morphe_away_pause_distance_title">見張る距離</string>
++  <string name="morphe_away_pause_distance_60">60cm まで(手に持って見る)</string>
++  <string name="morphe_away_pause_distance_80">80cm まで(机に立てかけて見る)</string>
++  <string name="morphe_away_pause_distance_100">1m まで</string>
++  <string name="morphe_away_pause_distance_150">1.5m まで(離れて見る)</string>
++  <string name="morphe_look_away_resume_title">戻ってきたら再開</string>
++  <string name="morphe_look_away_pause_paused">誰もいないので一時停止しました</string>
++  <string name="morphe_look_away_pause_permission">席を離れたら一時停止にはカメラの許可が必要です</string>
++  <string name="morphe_disable_on_the_go_title">外出先モードに切り替えない</string>
++  <string name="morphe_disable_on_the_go_summary_on">歩いていても大きい操作パネル(外出先モード)にしません。画面をタップすると操作パネルが消えます</string>
++  <string name="morphe_disable_on_the_go_summary_off">歩いていると YouTube が外出先モードに切り替えることがあります(操作パネルが出たままになります)</string>
  </resources>
 diff --git a/patches/src/main/resources/addresources/values/youtube/arrays.xml b/patches/src/main/resources/addresources/values/youtube/arrays.xml
-index 9e277cf..1ab27db 100644
+index 9e277cf..c225a21 100644
 --- a/patches/src/main/resources/addresources/values/youtube/arrays.xml
 +++ b/patches/src/main/resources/addresources/values/youtube/arrays.xml
-@@ -1070,4 +1070,17 @@
+@@ -1070,4 +1070,29 @@
          <item>SHARP</item>
          <item>CUSTOM</item>
      </string-array>
 +    <!-- UnoTube: look away pause -->
-+    <string-array name="morphe_look_away_pause_delay_entries">
-+        <item>@string/morphe_look_away_pause_delay_1</item>
-+        <item>@string/morphe_look_away_pause_delay_2</item>
-+        <item>@string/morphe_look_away_pause_delay_3</item>
-+        <item>@string/morphe_look_away_pause_delay_5</item>
++    <string-array name="morphe_away_pause_delay_entries">
++        <item>@string/morphe_away_pause_delay_3</item>
++        <item>@string/morphe_away_pause_delay_5</item>
++        <item>@string/morphe_away_pause_delay_10</item>
++        <item>@string/morphe_away_pause_delay_30</item>
 +    </string-array>
-+    <string-array name="morphe_look_away_pause_delay_entry_values" translatable="false">
-+        <item>ONE_SECOND</item>
-+        <item>TWO_SECONDS</item>
++    <string-array name="morphe_away_pause_delay_entry_values" translatable="false">
 +        <item>THREE_SECONDS</item>
 +        <item>FIVE_SECONDS</item>
++        <item>TEN_SECONDS</item>
++        <item>THIRTY_SECONDS</item>
++    </string-array>
++    <string-array name="morphe_away_pause_distance_entries">
++        <item>@string/morphe_away_pause_distance_60</item>
++        <item>@string/morphe_away_pause_distance_80</item>
++        <item>@string/morphe_away_pause_distance_100</item>
++        <item>@string/morphe_away_pause_distance_150</item>
++    </string-array>
++    <string-array name="morphe_away_pause_distance_entry_values" translatable="false">
++        <item>CM_60</item>
++        <item>CM_80</item>
++        <item>CM_100</item>
++        <item>CM_150</item>
 +    </string-array>
  </resources>
 diff --git a/patches/src/main/resources/addresources/values/youtube/strings.xml b/patches/src/main/resources/addresources/values/youtube/strings.xml
-index d64eb6c..7a22841 100644
+index d64eb6c..ee55abb 100644
 --- a/patches/src/main/resources/addresources/values/youtube/strings.xml
 +++ b/patches/src/main/resources/addresources/values/youtube/strings.xml
-@@ -1498,4 +1498,15 @@ Limitation: Reverts to old style \'More videos\' overlay"</string>
+@@ -1498,4 +1498,23 @@ Limitation: Reverts to old style \'More videos\' overlay"</string>
      <string name="morphe_player_icon_style_entry_sharp" translatable="false">Sharp</string>
      <string name="morphe_player_icon_style_entry_custom">Custom</string>
      <string name="morphe_shorts_icon_style_title">Shorts icon style</string>
 +    <!-- UnoTube: look away pause -->
-+    <string name="morphe_look_away_pause_title">Pause when looking away</string>
-+    <string name="morphe_look_away_pause_summary">Pauses when your face leaves the screen and resumes when you look back. The front camera is only used on the device while a video plays in the app, frames are never saved or sent</string>
-+    <string name="morphe_look_away_pause_delay_title">Pause after</string>
-+    <string name="morphe_look_away_pause_delay_1">1 second</string>
-+    <string name="morphe_look_away_pause_delay_2">2 seconds</string>
-+    <string name="morphe_look_away_pause_delay_3">3 seconds</string>
-+    <string name="morphe_look_away_pause_delay_5">5 seconds</string>
-+    <string name="morphe_look_away_resume_title">Resume when you look back</string>
-+    <string name="morphe_look_away_pause_paused">Paused because you looked away</string>
-+    <string name="morphe_look_away_pause_permission">Allow the camera to pause when you look away</string>
++    <string name="morphe_look_away_pause_title">Pause when you leave</string>
++    <string name="morphe_look_away_pause_summary">Pauses when nobody is in front of the front camera and resumes when you come back. Looking down is fine as long as your head or shoulders are visible. People far away are ignored. The camera is only used on the device while a video plays in the app, frames are never saved or sent</string>
++    <string name="morphe_away_pause_delay_title">Pause after</string>
++    <string name="morphe_away_pause_delay_3">3 seconds</string>
++    <string name="morphe_away_pause_delay_5">5 seconds</string>
++    <string name="morphe_away_pause_delay_10">10 seconds</string>
++    <string name="morphe_away_pause_delay_30">30 seconds</string>
++    <string name="morphe_away_pause_distance_title">Watch distance</string>
++    <string name="morphe_away_pause_distance_60">Up to 60 cm (handheld)</string>
++    <string name="morphe_away_pause_distance_80">Up to 80 cm (propped on a table)</string>
++    <string name="morphe_away_pause_distance_100">Up to 1 m</string>
++    <string name="morphe_away_pause_distance_150">Up to 1.5 m</string>
++    <string name="morphe_look_away_resume_title">Resume when you come back</string>
++    <string name="morphe_look_away_pause_paused">Paused because nobody is watching</string>
++    <string name="morphe_look_away_pause_permission">Allow the camera to pause when you leave</string>
++    <string name="morphe_disable_on_the_go_title">Disable On the Go mode</string>
++    <string name="morphe_disable_on_the_go_summary_on">The player never switches to the large On the Go controls. Tapping the video hides the controls</string>
++    <string name="morphe_disable_on_the_go_summary_off">YouTube may switch to On the Go mode while you walk (the controls stay on screen)</string>
  </resources>
